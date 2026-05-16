@@ -162,7 +162,7 @@ def load_config(path: Path) -> Config:
 def default_config_text(root: Path) -> str:
     root = root.resolve()
     return f'''# Inbox Swarm configuration.
-# Run with: uv run inbox-swarm daemon --config {root / "config.toml"}
+# Run with: swarm-inbox daemon --config {root / "config.toml"}
 
 root = "{root}"
 repo_path = "repo"

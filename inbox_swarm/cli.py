@@ -14,7 +14,7 @@ from .util import ensure_dir
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="inbox-swarm", description="Free-form task inbox daemon for coding agents.")
+    parser = argparse.ArgumentParser(prog="swarm-inbox", description="Free-form task inbox daemon for coding agents.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     init = sub.add_parser("init", help="Initialize an Inbox Swarm root directory.")
@@ -55,7 +55,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     init_repo_if_needed(config)
     print(f"Initialized Inbox Swarm at {root}")
     print(f"Drop folders or bare files into: {config.tasks_path / 'inbox'}")
-    print(f"Run: uv run inbox-swarm daemon --config {config_path}")
+    print(f"Run: swarm-inbox daemon --config {config_path}")
     return 0
 
 

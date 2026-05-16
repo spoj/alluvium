@@ -1,6 +1,8 @@
-# Inbox Swarm
+# Swarm Inbox
 
-Inbox Swarm is a local-first task inbox daemon for running commodity coding agents concurrently.
+Swarm Inbox is a local-first task inbox daemon for running commodity coding agents concurrently.
+
+The Python package and primary CLI are named `swarm-inbox`. A backwards-compatible `inbox-swarm` command is also installed.
 
 The public API is intentionally tiny:
 
@@ -62,21 +64,64 @@ Every task gets:
 
 The daemon does not pre-classify tasks. The agent infers meaning from the free-form folder.
 
-## Installation / development with uv
+## Installation with uv
+
+After PyPI publication:
 
 ```bash
-git clone <this-repo>
+uv tool install swarm-inbox
+# or without installing permanently:
+uvx swarm-inbox --help
+```
+
+From GitHub before PyPI publication:
+
+```bash
+uv tool install git+https://github.com/spoj/inbox-swarm
+```
+
+## Development with uv
+
+```bash
+git clone https://github.com/spoj/inbox-swarm
 cd inbox-swarm
 uv sync --dev
-uv run inbox-swarm --help
+uv run swarm-inbox --help
+uv run pytest
 ```
+
+## Publishing to PyPI
+
+The intended PyPI distribution name is `swarm-inbox`.
+
+Build locally:
+
+```bash
+uv build
+```
+
+Publish with a PyPI token:
+
+```bash
+UV_PUBLISH_TOKEN=... uv publish
+```
+
+A GitHub Actions trusted-publishing workflow can also be used once the PyPI project is configured for trusted publishing.
 
 ## Quick start
 
-Initialize a system root:
+Initialize a system root in the current directory:
 
 ```bash
-uv run inbox-swarm init ~/agent-system
+mkdir agent-system
+cd agent-system
+swarm-inbox init
+```
+
+Or initialize a specific path:
+
+```bash
+swarm-inbox init ~/agent-system
 cd ~/agent-system
 ```
 
@@ -89,19 +134,19 @@ echo "Please summarize this." > tasks/inbox/request.txt
 Run once:
 
 ```bash
-uv run --project /path/to/inbox-swarm inbox-swarm run-once --config config.toml --ignore-settle
+swarm-inbox run-once --ignore-settle
 ```
 
 Or run as a daemon:
 
 ```bash
-uv run --project /path/to/inbox-swarm inbox-swarm daemon --config config.toml
+swarm-inbox daemon
 ```
 
 Check status:
 
 ```bash
-uv run --project /path/to/inbox-swarm inbox-swarm status --config config.toml
+swarm-inbox status
 ```
 
 ## Using a real coding agent
@@ -227,7 +272,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/home/me/agent-system
-ExecStart=/path/to/inbox-swarm/.venv/bin/inbox-swarm daemon --config /home/me/agent-system/config.toml
+ExecStart=/home/me/.local/bin/swarm-inbox daemon --config /home/me/agent-system/config.toml
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM

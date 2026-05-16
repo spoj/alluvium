@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "inbox-swarm"
+name = "swarm-inbox"
 version = "0.1.0"
 description = "A local-first free-form task inbox daemon for concurrent coding agents, Git worktrees, integration, and knowledge synthesis."
 readme = "README.md"
@@ -33,7 +33,20 @@ dev = [
 ]
 
 [project.scripts]
+swarm-inbox = "inbox_swarm.cli:main"
 inbox-swarm = "inbox_swarm.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["inbox_swarm"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "inbox_swarm",
+  "tests",
+  "README.md",
+  "LICENSE",
+  "AGENTS.md",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

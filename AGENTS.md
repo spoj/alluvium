@@ -5,7 +5,7 @@ Use `uv` for all Python commands:
 ```bash
 uv sync --dev
 uv run pytest
-uv run inbox-swarm --help
+uv run swarm-inbox --help
 ```
 
 Project conventions:
