@@ -90,6 +90,21 @@ async def launch_worker(config: Config, task_dir: Path, *, git_lock: asyncio.Loc
                     proc.kill()
                 await proc.wait()
             exit_code = -9
+        except asyncio.CancelledError:
+            append_event(task_dir, "worker_process_cancelled", pid=proc.pid)
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except Exception:
+                proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=10)
+            except TimeoutError:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except Exception:
+                    proc.kill()
+                await proc.wait()
+            raise
 
     append_event(task_dir, "worker_exited", exit_code=exit_code)
     atomic_write_json(agent_dir / "process.json", {"exit_code": exit_code, "finished_at": iso_now()})

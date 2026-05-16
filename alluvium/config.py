@@ -51,6 +51,7 @@ class SafetyConfig:
     scan_interval_seconds: int = 5
     integrator_interval_seconds: int = 10
     janitor_interval_seconds: int = 60
+    shutdown_grace_seconds: int = 10
     ignore_name_prefixes: list[str] = field(default_factory=lambda: ["."])
     ignore_name_suffixes: list[str] = field(default_factory=lambda: [".tmp", ".part", ".partial", ".crdownload"])
 
@@ -69,8 +70,20 @@ class Config:
     safety: SafetyConfig = field(default_factory=SafetyConfig)
 
     @property
+    def daemon_dir(self) -> Path:
+        return self.root / ".alluvium"
+
+    @property
     def lock_path(self) -> Path:
-        return self.root / ".alluvium.lock"
+        return self.daemon_dir / "daemon.lock"
+
+    @property
+    def pid_path(self) -> Path:
+        return self.daemon_dir / "daemon.pid"
+
+    @property
+    def daemon_log_path(self) -> Path:
+        return self.logs_path / "daemon.log"
 
 
 def _get_section(data: dict[str, Any], name: str) -> dict[str, Any]:
@@ -133,6 +146,7 @@ def load_config(path: Path) -> Config:
         scan_interval_seconds=int(safety_raw.get("scan_interval_seconds", 5)),
         integrator_interval_seconds=int(safety_raw.get("integrator_interval_seconds", 10)),
         janitor_interval_seconds=int(safety_raw.get("janitor_interval_seconds", 60)),
+        shutdown_grace_seconds=int(safety_raw.get("shutdown_grace_seconds", 10)),
         ignore_name_prefixes=list(safety_raw.get("ignore_name_prefixes", ["."])),
         ignore_name_suffixes=list(safety_raw.get("ignore_name_suffixes", [".tmp", ".part", ".partial", ".crdownload"])),
     )
@@ -190,6 +204,7 @@ inbox_settle_seconds = 5
 scan_interval_seconds = 5
 integrator_interval_seconds = 10
 janitor_interval_seconds = 60
+shutdown_grace_seconds = 10
 ignore_name_prefixes = ["."]
 ignore_name_suffixes = [".tmp", ".part", ".partial", ".crdownload"]
 '''

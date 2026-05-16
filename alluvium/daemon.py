@@ -7,10 +7,10 @@ import signal
 from pathlib import Path
 from typing import Any
 
-from .config import Config
+from .config import Config, load_config
 from .fsqueue import claim_inbox_item, claim_revision_task, ensure_task_dirs, iter_claimable_inbox, move_task
 from .gitops import cleanup_task_worktree_and_branch, ensure_git_repo, integrate_task, list_pending_integrations
-from .util import append_event, ensure_dir
+from .util import append_event, atomic_write_json, ensure_dir, iso_now, read_json
 from .worker import ensure_result_files, launch_worker, task_needs_human
 
 
@@ -36,14 +36,42 @@ class DaemonLock:
             self.fh = None
 
 
+def pid_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def read_daemon_pid(config: Config) -> int | None:
+    data = read_json(config.pid_path, None)
+    if isinstance(data, dict):
+        try:
+            return int(data.get("pid"))
+        except (TypeError, ValueError):
+            return None
+    try:
+        text = config.pid_path.read_text(encoding="utf-8").strip()
+        return int(text) if text else None
+    except (FileNotFoundError, ValueError):
+        return None
+
+
 class AlluviumDaemon:
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, *, config_path: Path | None = None):
         self.config = config
+        self.config_path = config_path
         self.stop_event = asyncio.Event()
         self.worker_slots = asyncio.Semaphore(config.safety.max_workers)
         self.git_lock = asyncio.Lock()
         self.main_repo_lock = asyncio.Lock()
         self.running_tasks: set[str] = set()
+        self.worker_tasks: set[asyncio.Task[Any]] = set()
         self.lock = DaemonLock(config.lock_path)
 
     async def run(self) -> None:
@@ -51,6 +79,7 @@ class AlluviumDaemon:
         try:
             ensure_task_dirs(self.config)
             ensure_git_repo(self.config)
+            self.write_pid_file()
             self.reconcile_on_startup()
             self.install_signal_handlers()
             await asyncio.gather(
@@ -59,15 +88,84 @@ class AlluviumDaemon:
                 self.janitor_loop(),
             )
         finally:
+            await self.shutdown_workers()
+            self.remove_pid_file()
             self.lock.release()
+
+    def write_pid_file(self) -> None:
+        ensure_dir(self.config.daemon_dir)
+        atomic_write_json(
+            self.config.pid_path,
+            {
+                "pid": os.getpid(),
+                "started_at": iso_now(),
+                "config_path": str(self.config_path) if self.config_path else None,
+                "root": str(self.config.root),
+            },
+        )
+
+    def remove_pid_file(self) -> None:
+        try:
+            pid = read_daemon_pid(self.config)
+            if pid == os.getpid():
+                self.config.pid_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     def install_signal_handlers(self) -> None:
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
-                loop.add_signal_handler(sig, self.stop_event.set)
+                loop.add_signal_handler(sig, self.request_stop)
             except NotImplementedError:
                 pass
+        if hasattr(signal, "SIGHUP"):
+            try:
+                loop.add_signal_handler(signal.SIGHUP, self.reload_config)
+            except NotImplementedError:
+                pass
+
+    def request_stop(self) -> None:
+        print("[daemon] stop requested", flush=True)
+        self.stop_event.set()
+
+    def reload_config(self) -> None:
+        if not self.config_path:
+            print("[daemon] reload requested but no config path is known", flush=True)
+            return
+        try:
+            new_config = load_config(self.config_path)
+            # Keep daemon identity/path stable while still reloading operational settings.
+            immutable_changed = any(
+                getattr(new_config, name) != getattr(self.config, name)
+                for name in ["root", "repo_path", "tasks_path", "worktrees_path", "logs_path", "reserved_dir"]
+            )
+            if immutable_changed:
+                print(
+                    "[daemon] config reloaded; root/repo/tasks/worktrees/logs/reserved_dir changes require restart and were ignored",
+                    flush=True,
+                )
+                new_config.root = self.config.root
+                new_config.repo_path = self.config.repo_path
+                new_config.tasks_path = self.config.tasks_path
+                new_config.worktrees_path = self.config.worktrees_path
+                new_config.logs_path = self.config.logs_path
+                new_config.reserved_dir = self.config.reserved_dir
+            old_max = self.config.safety.max_workers
+            self.config = new_config
+            if self.config.safety.max_workers != old_max:
+                print("[daemon] max_workers changes require daemon restart", flush=True)
+            ensure_task_dirs(self.config)
+            ensure_git_repo(self.config)
+            print(f"[daemon] config reloaded from {self.config_path}", flush=True)
+        except Exception as exc:
+            print(f"[daemon] config reload failed: {exc}", flush=True)
+
+    async def sleep_or_stop(self, seconds: float) -> None:
+        try:
+            await asyncio.wait_for(self.stop_event.wait(), timeout=seconds)
+        except TimeoutError:
+            pass
 
     def reconcile_on_startup(self) -> None:
         # Conservative recovery: tasks in running were interrupted. Move to failed.
@@ -96,7 +194,7 @@ class AlluviumDaemon:
                 await self.start_available_workers()
             except Exception as exc:
                 print(f"[coordinator] error: {exc}", flush=True)
-            await asyncio.sleep(self.config.safety.scan_interval_seconds)
+            await self.sleep_or_stop(self.config.safety.scan_interval_seconds)
 
     async def start_available_workers(self) -> None:
         while not self.stop_event.is_set():
@@ -121,7 +219,9 @@ class AlluviumDaemon:
                 continue
             await self.worker_slots.acquire()
             self.running_tasks.add(task_dir.name)
-            asyncio.create_task(self.run_one_worker(task_dir))
+            worker_task = asyncio.create_task(self.run_one_worker(task_dir))
+            self.worker_tasks.add(worker_task)
+            worker_task.add_done_callback(self.worker_tasks.discard)
 
     async def run_one_worker(self, task_dir: Path) -> None:
         try:
@@ -155,6 +255,9 @@ class AlluviumDaemon:
                     async with self.git_lock:
                         cleanup_task_worktree_and_branch(self.config, task_dir.name, str(integration["branch"]))
                 move_task(self.config, task_dir, "done")
+        except asyncio.CancelledError:
+            append_event(task_dir, "worker_cancelled_by_daemon_shutdown")
+            raise
         except Exception as exc:
             try:
                 append_event(task_dir, "worker_supervisor_error", error=str(exc))
@@ -173,7 +276,7 @@ class AlluviumDaemon:
                     await self.integrate_ready_done_tasks(limit=1)
                 except Exception as exc:
                     print(f"[integrator] error: {exc}", flush=True)
-            await asyncio.sleep(self.config.safety.integrator_interval_seconds)
+            await self.sleep_or_stop(self.config.safety.integrator_interval_seconds)
 
     async def integrate_ready_done_tasks(self, *, limit: int | None = None) -> int:
         count = 0
@@ -207,7 +310,19 @@ class AlluviumDaemon:
     async def janitor_loop(self) -> None:
         while not self.stop_event.is_set():
             # Placeholder for future lease expiry, stale worktree pruning, metrics, etc.
-            await asyncio.sleep(self.config.safety.janitor_interval_seconds)
+            await self.sleep_or_stop(self.config.safety.janitor_interval_seconds)
+
+    async def shutdown_workers(self) -> None:
+        if not self.worker_tasks:
+            return
+        grace = max(0, int(getattr(self.config.safety, "shutdown_grace_seconds", 10)))
+        print(f"[daemon] waiting up to {grace}s for {len(self.worker_tasks)} worker(s) to finish", flush=True)
+        done, pending = await asyncio.wait(self.worker_tasks, timeout=grace)
+        if pending:
+            print(f"[daemon] cancelling {len(pending)} worker(s)", flush=True)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def run_once(self) -> None:
         """Useful for tests/debugging: claim/run currently claimable tasks and integrate once."""
@@ -228,9 +343,16 @@ def status_summary(config: Config) -> dict[str, Any]:
         d = config.tasks_path / state
         tasks[state] = len([p for p in d.iterdir() if not p.name.startswith(".")]) if d.exists() else 0
     pending_integrations = [p.name for p in list_pending_integrations(config)]
+    pid = read_daemon_pid(config)
     return {
         "root": str(config.root),
         "repo_path": str(config.repo_path),
+        "daemon": {
+            "pid": pid,
+            "running": pid_is_running(pid) if pid is not None else False,
+            "pid_file": str(config.pid_path),
+            "log_file": str(config.daemon_log_path),
+        },
         "tasks": tasks,
         "pending_integrations": pending_integrations,
     }

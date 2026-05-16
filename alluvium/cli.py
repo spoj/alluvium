@@ -3,11 +3,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
+import signal
+import subprocess
 import sys
+import time
 from pathlib import Path
 
-from .config import Config, default_config_text, load_config
-from .daemon import AlluviumDaemon, status_summary
+from .config import default_config_text, load_config
+from .daemon import AlluviumDaemon, pid_is_running, read_daemon_pid, status_summary
 from .fsqueue import ensure_task_dirs
 from .gitops import init_repo_if_needed
 from .util import ensure_dir
@@ -21,8 +25,17 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("root", nargs="?", default=".", help="Root directory to initialize.")
     init.add_argument("--force", action="store_true", help="Overwrite config.toml if it exists.")
 
-    daemon = sub.add_parser("daemon", help="Run the long-running daemon.")
+    daemon = sub.add_parser("daemon", help="Start the long-running daemon in the background by default.")
     daemon.add_argument("--config", default="config.toml", help="Path to config.toml.")
+    daemon.add_argument("--foreground", action="store_true", help="Run in the foreground instead of spawning a background daemon.")
+
+    stop = sub.add_parser("stop-daemon", help="Stop the background daemon.")
+    stop.add_argument("--config", default="config.toml")
+    stop.add_argument("--timeout", type=float, default=20.0, help="Seconds to wait for graceful shutdown.")
+    stop.add_argument("--force", action="store_true", help="Send SIGKILL if the daemon does not stop before timeout.")
+
+    reload_cmd = sub.add_parser("reload", help="Ask the background daemon to reload config.toml.")
+    reload_cmd.add_argument("--config", default="config.toml")
 
     once = sub.add_parser("run-once", help="Claim current inbox tasks, run workers, and integrate once.")
     once.add_argument("--config", default="config.toml")
@@ -59,10 +72,113 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
-async def cmd_daemon(args: argparse.Namespace) -> int:
-    config = load_config(Path(args.config))
-    daemon = AlluviumDaemon(config)
+def cmd_daemon(args: argparse.Namespace) -> int:
+    config_path = Path(args.config).expanduser().resolve()
+    config = load_config(config_path)
+    if args.foreground:
+        return asyncio.run(_run_daemon_foreground(config, config_path))
+    return start_background_daemon(config, config_path)
+
+
+async def _run_daemon_foreground(config, config_path: Path) -> int:
+    daemon = AlluviumDaemon(config, config_path=config_path)
     await daemon.run()
+    return 0
+
+
+def start_background_daemon(config, config_path: Path) -> int:
+    ensure_task_dirs(config)
+    ensure_dir(config.logs_path)
+    ensure_dir(config.daemon_dir)
+
+    existing_pid = read_daemon_pid(config)
+    if existing_pid and pid_is_running(existing_pid):
+        print(f"Alluvium daemon already running with pid {existing_pid}")
+        return 0
+    if existing_pid and not pid_is_running(existing_pid):
+        config.pid_path.unlink(missing_ok=True)
+
+    log_fh = config.daemon_log_path.open("ab")
+    command = [sys.executable, "-m", "alluvium.cli", "daemon", "--config", str(config_path), "--foreground"]
+    proc = subprocess.Popen(
+        command,
+        cwd=str(config.root),
+        stdin=subprocess.DEVNULL,
+        stdout=log_fh,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        close_fds=True,
+    )
+    log_fh.close()
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        pid = read_daemon_pid(config)
+        if pid == proc.pid and pid_is_running(pid):
+            print(f"Started Alluvium daemon pid {pid}")
+            print(f"Log: {config.daemon_log_path}")
+            return 0
+        if proc.poll() is not None:
+            print(f"daemon exited early with code {proc.returncode}; see {config.daemon_log_path}", file=sys.stderr)
+            return proc.returncode or 1
+        time.sleep(0.1)
+    print(f"Started Alluvium daemon pid {proc.pid} (pid file not observed yet)")
+    print(f"Log: {config.daemon_log_path}")
+    return 0
+
+
+def cmd_stop_daemon(args: argparse.Namespace) -> int:
+    config = load_config(Path(args.config))
+    pid = read_daemon_pid(config)
+    if not pid:
+        print("Alluvium daemon is not running (no pid file).")
+        return 0
+    if not pid_is_running(pid):
+        print(f"Alluvium daemon pid {pid} is not running; removing stale pid file.")
+        config.pid_path.unlink(missing_ok=True)
+        return 0
+
+    print(f"Stopping Alluvium daemon pid {pid}...")
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.time() + args.timeout
+    while time.time() < deadline:
+        if not pid_is_running(pid):
+            print("Stopped.")
+            return 0
+        time.sleep(0.2)
+
+    if args.force:
+        print(f"Daemon did not stop within {args.timeout}s; sending SIGKILL.")
+        os.kill(pid, signal.SIGKILL)
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if not pid_is_running(pid):
+                print("Killed.")
+                return 0
+            time.sleep(0.2)
+        print("SIGKILL sent, but process still appears to exist.", file=sys.stderr)
+        return 1
+
+    print(
+        f"Daemon still appears to be running after {args.timeout}s. "
+        "It may be waiting for active worker cleanup. Use --force to SIGKILL.",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def cmd_reload(args: argparse.Namespace) -> int:
+    if not hasattr(signal, "SIGHUP"):
+        print("Config reload is not supported on this platform (no SIGHUP).", file=sys.stderr)
+        return 2
+    config = load_config(Path(args.config))
+    pid = read_daemon_pid(config)
+    if not pid or not pid_is_running(pid):
+        print("Alluvium daemon is not running.", file=sys.stderr)
+        return 1
+    os.kill(pid, signal.SIGHUP)
+    print(f"Sent reload signal to Alluvium daemon pid {pid}.")
+    print(f"Check log: {config.daemon_log_path}")
     return 0
 
 
@@ -70,14 +186,14 @@ async def cmd_run_once(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config))
     if args.ignore_settle:
         config.safety.inbox_settle_seconds = 0
-    daemon = AlluviumDaemon(config)
+    daemon = AlluviumDaemon(config, config_path=Path(args.config).expanduser().resolve())
     await daemon.run_once()
     return 0
 
 
 async def cmd_integrate_once(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config))
-    daemon = AlluviumDaemon(config)
+    daemon = AlluviumDaemon(config, config_path=Path(args.config).expanduser().resolve())
     count = await daemon.integrate_ready_done_tasks(limit=None)
     print(json.dumps({"integrated_or_checked": count}, indent=2))
     return 0
@@ -113,7 +229,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "init":
         return cmd_init(args)
     if args.command == "daemon":
-        return asyncio.run(cmd_daemon(args))
+        return cmd_daemon(args)
+    if args.command == "stop-daemon":
+        return cmd_stop_daemon(args)
+    if args.command == "reload":
+        return cmd_reload(args)
     if args.command == "run-once":
         return asyncio.run(cmd_run_once(args))
     if args.command == "integrate-once":
