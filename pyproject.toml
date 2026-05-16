@@ -3,14 +3,14 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "swarm-inbox"
-version = "0.1.0"
-description = "A local-first free-form task inbox daemon for concurrent coding agents, Git worktrees, integration, and knowledge synthesis."
+name = "alluvium-swarm"
+version = "0.2.0"
+description = "A local-first free-form task inbox daemon for concurrent coding agents, Git worktrees, and maintainer-style integration."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [
-  { name = "Inbox Swarm Contributors" }
+  { name = "Alluvium Contributors" }
 ]
 keywords = ["agents", "automation", "git", "worktree", "task-queue", "local-first"]
 classifiers = [
@@ -33,15 +33,14 @@ dev = [
 ]
 
 [project.scripts]
-swarm-inbox = "inbox_swarm.cli:main"
-inbox-swarm = "inbox_swarm.cli:main"
+alluvium = "alluvium.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["inbox_swarm"]
+packages = ["alluvium"]
 
 [tool.hatch.build.targets.sdist]
 include = [
-  "inbox_swarm",
+  "alluvium",
   "tests",
   "README.md",
   "LICENSE",

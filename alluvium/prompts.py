@@ -5,8 +5,27 @@ from pathlib import Path
 from .config import Config
 
 
+def _revision_context(config: Config, task_dir: Path) -> str:
+    agent_dir = task_dir / config.reserved_dir
+    revision = agent_dir / "revision_request.md"
+    if not revision.exists():
+        return ""
+    return f"""
+## Revision request
+
+This task was previously returned by the integrator/maintainer. Before doing
+anything else, read and address:
+
+`{revision}`
+
+You should amend the existing task branch/worktree rather than starting over.
+Preserve useful prior work, fix the maintainer's concerns, commit your changes,
+and update the result files.
+"""
+
+
 def worker_prompt(config: Config, *, task_id: str, task_dir: Path, worktree: Path, branch: str) -> str:
-    return f"""# Inbox Swarm Worker Prompt
+    return f"""# Alluvium Worker Prompt
 
 You are processing one free-form task folder.
 
@@ -19,10 +38,10 @@ Reserved runtime directory: `{task_dir / config.reserved_dir}`
 The task folder may contain arbitrary files or a single bare file that has been
 wrapped into this folder. Infer the intended goal from the folder name, obvious
 instruction files, emails, documents, attachments, filenames, and context.
-
+{_revision_context(config, task_dir)}
 ## Required first steps
 
-1. Inspect the task folder, excluding `{config.reserved_dir}/` unless reading prior runtime notes.
+1. Inspect the task folder, excluding `{config.reserved_dir}/` unless reading prior runtime notes or revision feedback.
 2. Write your interpretation to `{config.reserved_dir}/understanding.md`.
 3. Write your plan to `{config.reserved_dir}/plan.md`.
 
@@ -53,16 +72,18 @@ Minimal result.json shape:
 
 ## Repository conventions
 
-Every task has a Git branch and worktree. If long-term repo changes are useful,
-make them in the worktree and commit them on the task branch. Never merge to main.
+Every task has a Git branch and worktree. If durable repo changes are useful,
+make them directly in the worktree and commit them on the task branch. Never
+merge to main.
 
-Preferred locations:
+The durable repo may contain code, docs, knowledge, tools, configuration, tests,
+or anything else the project uses. Do not force changes into a special proposal
+or knowledge topology unless the repository's own `AGENTS.md` or task contents
+ask for that. Make the branch correct as a whole.
 
-- durable per-task knowledge notes: `knowledge/inbox/<task-id>.md`
-- source metadata: `knowledge/sources/<source-id>.json`
-- generated reusable tools: `skills/proposed/<tool-name>/`
-- approved reusable tools live under `skills/approved/` and should be treated as read-only
-- curated knowledge under `knowledge/curated/` should only be rewritten when the task is clearly a synthesis/curation task
+If you create or modify code, update tests/docs when appropriate. If you create
+or modify durable knowledge or tools, place them wherever the repository
+conventions say they belong. Follow `AGENTS.md` in the repo if present.
 
 If you changed the repository but cannot commit, leave the working tree with the
 changes; the daemon will attempt a mechanical auto-commit.
@@ -91,27 +112,7 @@ A complete worker run leaves enough information for a human or integrator to kno
 - what you inferred,
 - what you did,
 - what files you produced,
-- whether repository changes are intended,
+- what durable repo changes you made, if any,
 - whether external effects occurred,
 - whether human action is needed.
-"""
-
-
-def synthesis_task_text() -> str:
-    return """# System synthesis task
-
-This is an Inbox Swarm maintenance task.
-
-Read accumulated source-grounded notes under `knowledge/inbox/` and update
-`knowledge/curated/` with durable, concise, source-preserving knowledge.
-
-Rules:
-
-- Preserve citations/provenance to inbox notes and source metadata.
-- Prefer small, targeted edits.
-- Do not delete raw sources.
-- Do not modify `skills/approved/`.
-- If notes contradict each other, record the contradiction and confidence rather than hiding it.
-- Commit changes on the task branch only. Never merge to main.
-- Write task artifacts and result files under `.agent/`.
 """

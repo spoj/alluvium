@@ -9,7 +9,7 @@ from pathlib import Path
 from .config import Config
 from .util import atomic_write_json, ensure_dir, iso_now, make_task_id, tree_latest_mtime, append_event
 
-TASK_STATES = ["inbox", "running", "needs_human", "done", "failed", "dead_letter"]
+TASK_STATES = ["inbox", "running", "needs_revision", "needs_human", "done", "failed", "dead_letter"]
 
 
 def ensure_task_dirs(config: Config) -> None:
@@ -87,20 +87,43 @@ def prepare_agent_subtree(config: Config, task_dir: Path, *, original_name: str,
         # Treat a producer-supplied reserved dir as input, not trusted runtime state.
         quarantined = task_dir / f"_producer_agent_dir_{uuid.uuid4().hex[:8]}"
         os.rename(agent_dir, quarantined)
+    return ensure_runtime_subtree(config, task_dir, original_name=original_name, task_id=task_id, preserve_identity=False)
+
+
+def ensure_runtime_subtree(
+    config: Config,
+    task_dir: Path,
+    *,
+    original_name: str | None = None,
+    task_id: str | None = None,
+    preserve_identity: bool = True,
+) -> Path:
+    agent_dir = task_dir / config.reserved_dir
     ensure_dir(agent_dir)
     for name in ["outputs", "scratch", "logs", "repo", "effects", "spawned_tasks"]:
         ensure_dir(agent_dir / name)
-    atomic_write_json(
-        agent_dir / "identity.json",
-        {
-            "task_id": task_id,
-            "original_name": original_name,
-            "claimed_at": iso_now(),
-            "claim_token": str(uuid.uuid4()),
-            "reserved_dir": config.reserved_dir,
-        },
-    )
+    identity_path = agent_dir / "identity.json"
+    if not preserve_identity or not identity_path.exists():
+        atomic_write_json(
+            identity_path,
+            {
+                "task_id": task_id or task_dir.name,
+                "original_name": original_name or task_dir.name,
+                "claimed_at": iso_now(),
+                "claim_token": str(uuid.uuid4()),
+                "reserved_dir": config.reserved_dir,
+            },
+        )
     return agent_dir
+
+
+def claim_revision_task(config: Config, item: Path) -> Path:
+    """Move an existing task needing revision back to running, preserving its ID and .agent state."""
+    running_final = config.tasks_path / "running" / item.name
+    os.rename(item, running_final)
+    ensure_runtime_subtree(config, running_final, preserve_identity=True)
+    append_event(running_final, "claimed_for_revision", task_id=item.name)
+    return running_final
 
 
 def move_task(config: Config, task_dir: Path, state: str) -> Path:
@@ -119,8 +142,8 @@ def move_task(config: Config, task_dir: Path, state: str) -> Path:
 def create_inbox_task(config: Config, name: str, files: dict[str, str]) -> Path:
     """Create an internal free-form inbox task atomically.
 
-    Used for system-created synthesis tasks and examples. The public API remains:
-    create a folder in tasks/inbox.
+    Used for system-created tasks and examples. The public API remains:
+    create a folder or bare file in tasks/inbox.
     """
     inbox = config.tasks_path / "inbox"
     staging = inbox / f".{name}.{uuid.uuid4().hex}.tmp"

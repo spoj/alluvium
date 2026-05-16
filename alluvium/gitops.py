@@ -42,7 +42,13 @@ def worktree_path_for_task(config: Config, task_id: str) -> Path:
     return config.worktrees_path / task_id
 
 
-def create_worktree(config: Config, *, task_id: str) -> tuple[str, Path, str]:
+def create_worktree(config: Config, *, task_id: str, task_dir: Path | None = None) -> tuple[str, Path, str]:
+    """Create or reuse the task branch/worktree.
+
+    New inbox tasks get a fresh branch from the base branch. Tasks returned for
+    revision keep their existing branch and worktree so the worker can amend the
+    previous attempt instead of starting over.
+    """
     ensure_git_repo(config)
     branch = branch_name_for_task(task_id)
     worktree = worktree_path_for_task(config, task_id)
@@ -50,12 +56,19 @@ def create_worktree(config: Config, *, task_id: str) -> tuple[str, Path, str]:
     base = config.integration.base_branch
     base_commit = current_commit(config, base)
 
-    if worktree.exists():
-        shutil.rmtree(worktree)
-    # Unique task IDs should make branch collisions impossible. Delete stale branch defensively.
+    if task_dir is not None:
+        prior_base = task_dir / config.reserved_dir / "repo" / "base_commit.txt"
+        if prior_base.exists():
+            base_commit = prior_base.read_text(encoding="utf-8").strip() or base_commit
+
     existing = run_cmd(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=config.repo_path, check=False)
     if existing.returncode == 0:
-        git(config, "branch", "-D", branch)
+        if not worktree.exists():
+            git(config, "worktree", "add", str(worktree), branch)
+        return branch, worktree, base_commit
+
+    if worktree.exists():
+        shutil.rmtree(worktree)
     git(config, "worktree", "add", "-b", branch, str(worktree), base)
     return branch, worktree, base_commit
 
@@ -131,6 +144,15 @@ def finalize_worker_branch(config: Config, task_dir: Path, *, branch: str, workt
     if has_changes:
         atomic_write_text(repo_dir / "patch.diff", patch(config, base_commit=base_commit, branch=branch))
 
+    prior = {}
+    prior_path = task_dir / config.reserved_dir / "integration.json"
+    if prior_path.exists():
+        try:
+            import json
+
+            prior = json.loads(prior_path.read_text(encoding="utf-8"))
+        except Exception:
+            prior = {}
     integration = {
         "status": "pending" if has_changes else "noop",
         "has_repo_changes": has_changes,
@@ -138,6 +160,7 @@ def finalize_worker_branch(config: Config, task_dir: Path, *, branch: str, workt
         "base_commit": base_commit,
         "head_commit": head,
         "commit_count": count,
+        "revision_round": int(prior.get("revision_round", 0)),
         "updated_at": iso_now(),
     }
     atomic_write_json(task_dir / config.reserved_dir / "integration.json", integration)
@@ -170,6 +193,47 @@ def integration_json_path(config: Config, task_dir: Path) -> Path:
     return task_dir / config.reserved_dir / "integration.json"
 
 
+def _return_for_revision_or_block(
+    config: Config,
+    task_dir: Path,
+    integration: dict[str, Any],
+    *,
+    reason: str,
+    revisionable: bool,
+    details: str = "",
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    revision_round = int(integration.get("revision_round", 0))
+    can_revise = revisionable and config.integration.return_blocked_for_revision and revision_round < config.integration.max_revision_rounds
+    status = "needs_revision" if can_revise else "blocked"
+    if can_revise:
+        revision_round += 1
+    integration.update(
+        {
+            "status": status,
+            "reason": reason,
+            "revision_round": revision_round,
+            "updated_at": iso_now(),
+        }
+    )
+    if status == "blocked":
+        integration["blocked_at"] = iso_now()
+    if extra:
+        integration.update(extra)
+    feedback = task_dir / config.reserved_dir / "revision_request.md"
+    if status == "needs_revision":
+        feedback.write_text(
+            "# Revision requested by integrator\n\n"
+            f"Reason: {reason}\n\n"
+            f"Revision round: {revision_round} of {config.integration.max_revision_rounds}\n\n"
+            "Please amend the existing task branch to address this feedback. The daemon will re-run a worker on this same task and branch.\n\n"
+            + ("## Details\n\n" + details if details else ""),
+            encoding="utf-8",
+        )
+    atomic_write_json(integration_json_path(config, task_dir), integration)
+    return integration
+
+
 def integrate_task(config: Config, task_dir: Path) -> dict[str, Any]:
     """Serially integrate a done task's branch into the base branch.
 
@@ -194,16 +258,13 @@ def integrate_task(config: Config, task_dir: Path) -> dict[str, Any]:
         return integration
 
     if not main_is_clean(config):
-        integration.update(
-            {
-                "status": "blocked",
-                "reason": "base repo worktree is not clean",
-                "blocked_at": iso_now(),
-                "updated_at": iso_now(),
-            }
+        return _return_for_revision_or_block(
+            config,
+            task_dir,
+            integration,
+            reason="base repo worktree is not clean",
+            revisionable=False,
         )
-        atomic_write_json(integration_path, integration)
-        return integration
 
     base = config.integration.base_branch
     git(config, "checkout", base)
@@ -213,34 +274,29 @@ def integrate_task(config: Config, task_dir: Path) -> dict[str, Any]:
         conflict_text = f"STDOUT:\n{merge.stdout}\n\nSTDERR:\n{merge.stderr}\n"
         atomic_write_text(task_dir / config.reserved_dir / "repo" / "integration_conflict.txt", conflict_text)
         run_cmd(["git", "reset", "--hard", "HEAD"], cwd=config.repo_path, env=git_env(config), check=False)
-        integration.update(
-            {
-                "status": "blocked",
-                "reason": "merge conflict",
-                "merge_stdout": merge.stdout[-8000:],
-                "merge_stderr": merge.stderr[-8000:],
-                "blocked_at": iso_now(),
-                "updated_at": iso_now(),
-            }
+        return _return_for_revision_or_block(
+            config,
+            task_dir,
+            integration,
+            reason="merge conflict",
+            revisionable=True,
+            details=conflict_text,
+            extra={"merge_stdout": merge.stdout[-8000:], "merge_stderr": merge.stderr[-8000:]},
         )
-        atomic_write_json(integration_path, integration)
-        return integration
 
     tests_ok, test_results = run_integration_tests(config)
     atomic_write_json(task_dir / config.reserved_dir / "repo" / "integration_tests.json", test_results)
     if not tests_ok:
         run_cmd(["git", "reset", "--hard", "HEAD"], cwd=config.repo_path, env=git_env(config), check=False)
-        integration.update(
-            {
-                "status": "blocked",
-                "reason": "integration tests failed",
-                "tests": test_results,
-                "blocked_at": iso_now(),
-                "updated_at": iso_now(),
-            }
+        return _return_for_revision_or_block(
+            config,
+            task_dir,
+            integration,
+            reason="integration tests failed",
+            revisionable=True,
+            details=json.dumps(test_results, indent=2),
+            extra={"tests": test_results},
         )
-        atomic_write_json(integration_path, integration)
-        return integration
 
     commit = run_cmd(
         ["git", "commit", "-m", f"Integrate task {task_dir.name}"],
@@ -256,18 +312,15 @@ def integrate_task(config: Config, task_dir: Path) -> dict[str, Any]:
             cleanup_task_worktree_and_branch(config, task_dir.name, branch)
             return integration
         run_cmd(["git", "reset", "--hard", "HEAD"], cwd=config.repo_path, env=git_env(config), check=False)
-        integration.update(
-            {
-                "status": "blocked",
-                "reason": "git commit failed",
-                "commit_stdout": commit.stdout[-8000:],
-                "commit_stderr": commit.stderr[-8000:],
-                "blocked_at": iso_now(),
-                "updated_at": iso_now(),
-            }
+        return _return_for_revision_or_block(
+            config,
+            task_dir,
+            integration,
+            reason="git commit failed",
+            revisionable=False,
+            details=f"STDOUT:\n{commit.stdout}\n\nSTDERR:\n{commit.stderr}\n",
+            extra={"commit_stdout": commit.stdout[-8000:], "commit_stderr": commit.stderr[-8000:]},
         )
-        atomic_write_json(integration_path, integration)
-        return integration
 
     merge_commit = current_commit(config, "HEAD")
     integration.update(
@@ -320,34 +373,26 @@ def init_repo_if_needed(config: Config) -> None:
     ensure_dir(config.repo_path)
     if not (config.repo_path / ".git").exists():
         run_cmd(["git", "init", "-b", config.integration.base_branch], cwd=config.repo_path, env=git_env(config), check=True)
-        ensure_dir(config.repo_path / "knowledge" / "curated")
-        ensure_dir(config.repo_path / "knowledge" / "inbox")
-        ensure_dir(config.repo_path / "knowledge" / "sources")
-        ensure_dir(config.repo_path / "skills" / "approved")
-        ensure_dir(config.repo_path / "skills" / "proposed")
-        for rel in [
-            "knowledge/curated/.gitkeep",
-            "knowledge/inbox/.gitkeep",
-            "knowledge/sources/.gitkeep",
-            "skills/approved/.gitkeep",
-            "skills/proposed/.gitkeep",
-        ]:
-            (config.repo_path / rel).write_text("", encoding="utf-8")
         (config.repo_path / "AGENTS.md").write_text(_default_repo_agents_md(), encoding="utf-8")
         run_cmd(["git", "add", "-A"], cwd=config.repo_path, env=git_env(config), check=True)
-        run_cmd(["git", "commit", "-m", "Initialize Inbox Swarm repository"], cwd=config.repo_path, env=git_env(config), check=True)
+        run_cmd(["git", "commit", "-m", "Initialize Alluvium repository"], cwd=config.repo_path, env=git_env(config), check=True)
 
 
 def _default_repo_agents_md() -> str:
     return """# Repository Agent Conventions
 
-This repository is maintained by Inbox Swarm workers.
+This durable repository is maintained by Alluvium workers.
 
-- Write per-task durable knowledge notes under `knowledge/inbox/`.
-- Write source metadata under `knowledge/sources/`.
-- Write generated tools under `skills/proposed/`.
-- Treat `skills/approved/` as read-only unless performing an explicit skill-review task.
-- Rewrite `knowledge/curated/` only for explicit synthesis/curation tasks.
-- Never commit raw private source files unless explicitly requested.
-- Preserve provenance and citations for knowledge derived from task inputs.
+Workers may change code, docs, knowledge, tools, tests, configuration, or any
+other project files when the task warrants it. Make the branch correct as a
+whole; do not force changes into a special proposal/knowledge topology unless a
+task or this file says so.
+
+General expectations:
+
+- Keep changes focused on the task.
+- Add or update tests/docs when appropriate.
+- Preserve provenance for facts derived from task inputs.
+- Do not commit raw private source files unless explicitly requested.
+- Never merge to `main`; the integrator/maintainer does that serially.
 """

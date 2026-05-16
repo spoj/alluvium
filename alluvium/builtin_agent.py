@@ -25,7 +25,7 @@ def inventory(task_dir: Path, reserved: str = ".agent") -> list[dict[str, object
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Deterministic built-in Inbox Swarm agent.")
+    parser = argparse.ArgumentParser(description="Deterministic built-in Alluvium agent.")
     parser.add_argument("--task-dir", required=True)
     parser.add_argument("--worktree", required=True)
     parser.add_argument("--prompt-file", required=True)
@@ -39,7 +39,7 @@ def main(argv: list[str] | None = None) -> int:
     files = inventory(task_dir)
     (agent_dir / "understanding.md").write_text(
         "# Understanding\n\n"
-        "This task was processed by the deterministic built-in agent. "
+        "This task was processed by the deterministic built-in Alluvium agent. "
         "It inventories inputs but does not perform LLM reasoning. Configure "
         "[agent].command in config.toml to use a commodity coding agent.\n",
         encoding="utf-8",

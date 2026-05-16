@@ -13,7 +13,7 @@ class AgentConfig:
         default_factory=lambda: [
             sys.executable,
             "-m",
-            "inbox_swarm.builtin_agent",
+            "alluvium.builtin_agent",
             "--task-dir",
             "{task_dir}",
             "--worktree",
@@ -31,22 +31,16 @@ class IntegrationConfig:
     base_branch: str = "main"
     strategy: str = "squash_merge"
     run_tests: list[str] = field(default_factory=list)
-    move_blocked_to_needs_human: bool = True
+    return_blocked_for_revision: bool = True
+    max_revision_rounds: int = 2
+    move_unrevisionable_to_needs_human: bool = True
     cleanup_after_merge: bool = True
 
 
 @dataclass(slots=True)
-class SynthesisConfig:
-    enabled: bool = False
-    min_inbox_notes: int = 10
-    interval_seconds: int = 24 * 3600
-    check_interval_seconds: int = 300
-
-
-@dataclass(slots=True)
 class GitConfig:
-    author_name: str = "Inbox Swarm"
-    author_email: str = "inbox-swarm@example.local"
+    author_name: str = "Alluvium"
+    author_email: str = "alluvium@example.local"
     auto_commit_worker_changes: bool = True
 
 
@@ -71,13 +65,12 @@ class Config:
     reserved_dir: str = ".agent"
     agent: AgentConfig = field(default_factory=AgentConfig)
     integration: IntegrationConfig = field(default_factory=IntegrationConfig)
-    synthesis: SynthesisConfig = field(default_factory=SynthesisConfig)
     git: GitConfig = field(default_factory=GitConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
 
     @property
     def lock_path(self) -> Path:
-        return self.root / ".inbox-swarm.lock"
+        return self.root / ".alluvium.lock"
 
 
 def _get_section(data: dict[str, Any], name: str) -> dict[str, Any]:
@@ -107,7 +100,6 @@ def load_config(path: Path) -> Config:
 
     agent_raw = _get_section(raw, "agent")
     integration_raw = _get_section(raw, "integration")
-    synthesis_raw = _get_section(raw, "synthesis")
     git_raw = _get_section(raw, "git")
     safety_raw = _get_section(raw, "safety")
 
@@ -120,18 +112,19 @@ def load_config(path: Path) -> Config:
         base_branch=str(integration_raw.get("base_branch", "main")),
         strategy=str(integration_raw.get("strategy", "squash_merge")),
         run_tests=list(integration_raw.get("run_tests", [])),
-        move_blocked_to_needs_human=bool(integration_raw.get("move_blocked_to_needs_human", True)),
+        return_blocked_for_revision=bool(integration_raw.get("return_blocked_for_revision", True)),
+        max_revision_rounds=int(integration_raw.get("max_revision_rounds", 2)),
+        move_unrevisionable_to_needs_human=bool(
+            integration_raw.get(
+                "move_unrevisionable_to_needs_human",
+                integration_raw.get("move_blocked_to_needs_human", True),
+            )
+        ),
         cleanup_after_merge=bool(integration_raw.get("cleanup_after_merge", True)),
     )
-    synthesis = SynthesisConfig(
-        enabled=bool(synthesis_raw.get("enabled", False)),
-        min_inbox_notes=int(synthesis_raw.get("min_inbox_notes", 10)),
-        interval_seconds=int(synthesis_raw.get("interval_seconds", 24 * 3600)),
-        check_interval_seconds=int(synthesis_raw.get("check_interval_seconds", 300)),
-    )
     git = GitConfig(
-        author_name=str(git_raw.get("author_name", "Inbox Swarm")),
-        author_email=str(git_raw.get("author_email", "inbox-swarm@example.local")),
+        author_name=str(git_raw.get("author_name", "Alluvium")),
+        author_email=str(git_raw.get("author_email", "alluvium@example.local")),
         auto_commit_worker_changes=bool(git_raw.get("auto_commit_worker_changes", True)),
     )
     safety = SafetyConfig(
@@ -153,7 +146,6 @@ def load_config(path: Path) -> Config:
         reserved_dir=str(raw.get("reserved_dir", ".agent")),
         agent=agent,
         integration=integration,
-        synthesis=synthesis,
         git=git,
         safety=safety,
     )
@@ -161,8 +153,8 @@ def load_config(path: Path) -> Config:
 
 def default_config_text(root: Path) -> str:
     root = root.resolve()
-    return f'''# Inbox Swarm configuration.
-# Run with: swarm-inbox daemon --config {root / "config.toml"}
+    return f'''# Alluvium configuration.
+# Run with: alluvium daemon --config {root / "config.toml"}
 
 root = "{root}"
 repo_path = "repo"
@@ -174,7 +166,7 @@ reserved_dir = ".agent"
 [agent]
 # Default is the deterministic built-in agent. Replace with a commodity coding agent.
 # Placeholders: {{task_id}}, {{task_dir}}, {{agent_dir}}, {{worktree}}, {{branch}}, {{prompt_file}}
-command = ["{sys.executable}", "-m", "inbox_swarm.builtin_agent", "--task-dir", "{{task_dir}}", "--worktree", "{{worktree}}", "--prompt-file", "{{prompt_file}}"]
+command = ["{sys.executable}", "-m", "alluvium.builtin_agent", "--task-dir", "{{task_dir}}", "--worktree", "{{worktree}}", "--prompt-file", "{{prompt_file}}"]
 timeout_seconds = 3600
 
 [integration]
@@ -182,18 +174,14 @@ enabled = true
 base_branch = "main"
 strategy = "squash_merge"
 run_tests = []
-move_blocked_to_needs_human = true
+return_blocked_for_revision = true
+max_revision_rounds = 2
+move_unrevisionable_to_needs_human = true
 cleanup_after_merge = true
 
-[synthesis]
-enabled = false
-min_inbox_notes = 10
-interval_seconds = 86400
-check_interval_seconds = 300
-
 [git]
-author_name = "Inbox Swarm"
-author_email = "inbox-swarm@example.local"
+author_name = "Alluvium"
+author_email = "alluvium@example.local"
 auto_commit_worker_changes = true
 
 [safety]

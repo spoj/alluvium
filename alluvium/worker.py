@@ -17,7 +17,7 @@ async def launch_worker(config: Config, task_dir: Path, *, git_lock: asyncio.Loc
     agent_dir = task_dir / config.reserved_dir
 
     async with git_lock:
-        branch, worktree, base_commit = create_worktree(config, task_id=task_id)
+        branch, worktree, base_commit = create_worktree(config, task_id=task_id, task_dir=task_dir)
         write_repo_metadata(config, task_dir, branch=branch, worktree=worktree, base_commit=base_commit)
 
     prompt = worker_prompt(config, task_id=task_id, task_dir=task_dir, worktree=worktree, branch=branch)
@@ -40,12 +40,12 @@ async def launch_worker(config: Config, task_dir: Path, *, git_lock: asyncio.Loc
     stderr_path = agent_dir / "logs" / "stderr.log"
     env = {
         **os.environ,
-        "INBOX_SWARM_TASK_ID": task_id,
-        "INBOX_SWARM_TASK_DIR": str(task_dir),
-        "INBOX_SWARM_AGENT_DIR": str(agent_dir),
-        "INBOX_SWARM_WORKTREE": str(worktree),
-        "INBOX_SWARM_BRANCH": branch,
-        "INBOX_SWARM_PROMPT_FILE": str(prompt_file),
+        "ALLUVIUM_TASK_ID": task_id,
+        "ALLUVIUM_TASK_DIR": str(task_dir),
+        "ALLUVIUM_AGENT_DIR": str(agent_dir),
+        "ALLUVIUM_WORKTREE": str(worktree),
+        "ALLUVIUM_BRANCH": branch,
+        "ALLUVIUM_PROMPT_FILE": str(prompt_file),
     }
 
     with stdout_path.open("ab") as stdout_fh, stderr_path.open("ab") as stderr_fh:

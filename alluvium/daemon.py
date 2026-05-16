@@ -2,18 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
-import json
 import os
 import signal
-import time
 from pathlib import Path
 from typing import Any
 
 from .config import Config
-from .fsqueue import claim_inbox_item, create_inbox_task, ensure_task_dirs, iter_claimable_inbox, move_task
+from .fsqueue import claim_inbox_item, claim_revision_task, ensure_task_dirs, iter_claimable_inbox, move_task
 from .gitops import cleanup_task_worktree_and_branch, ensure_git_repo, integrate_task, list_pending_integrations
-from .prompts import synthesis_task_text
-from .util import append_event, atomic_write_json, ensure_dir, iso_now, read_json
+from .util import append_event, ensure_dir
 from .worker import ensure_result_files, launch_worker, task_needs_human
 
 
@@ -28,7 +25,7 @@ class DaemonLock:
         try:
             fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise RuntimeError(f"another inbox-swarm daemon appears to be running: {self.path}") from exc
+            raise RuntimeError(f"another alluvium daemon appears to be running: {self.path}") from exc
         self.fh.write(str(os.getpid()) + "\n")
         self.fh.flush()
 
@@ -39,7 +36,7 @@ class DaemonLock:
             self.fh = None
 
 
-class InboxSwarmDaemon:
+class AlluviumDaemon:
     def __init__(self, config: Config):
         self.config = config
         self.stop_event = asyncio.Event()
@@ -59,7 +56,6 @@ class InboxSwarmDaemon:
             await asyncio.gather(
                 self.coordinator_loop(),
                 self.integrator_loop(),
-                self.synthesis_scheduler_loop(),
                 self.janitor_loop(),
             )
         finally:
@@ -106,12 +102,18 @@ class InboxSwarmDaemon:
         while not self.stop_event.is_set():
             if self.worker_slots.locked():
                 return
-            items = iter_claimable_inbox(self.config)
-            if not items:
+            revision_items = self.iter_revision_tasks()
+            inbox_items = iter_claimable_inbox(self.config)
+            if revision_items:
+                item = revision_items[0]
+                claim = claim_revision_task
+            elif inbox_items:
+                item = inbox_items[0]
+                claim = claim_inbox_item
+            else:
                 return
-            item = items[0]
             try:
-                task_dir = claim_inbox_item(self.config, item)
+                task_dir = claim(self.config, item)
             except FileNotFoundError:
                 continue
             except Exception as exc:
@@ -182,48 +184,25 @@ class InboxSwarmDaemon:
                 append_event(task, "integration_started")
                 status = await asyncio.to_thread(integrate_task, self.config, task)
                 append_event(task, "integration_finished", status=status.get("status"), reason=status.get("reason"))
-                if status.get("status") == "blocked" and self.config.integration.move_blocked_to_needs_human:
+                if status.get("status") == "needs_revision":
+                    move_task(self.config, task, "needs_revision")
+                elif status.get("status") == "blocked" and self.config.integration.move_unrevisionable_to_needs_human:
                     needs = task / self.config.reserved_dir / "needs_human.md"
                     needs.write_text(
                         "# Integration blocked\n\n"
                         f"Reason: {status.get('reason', 'unknown')}\n\n"
-                        "Inspect `.agent/repo/` and resolve manually, then update `.agent/integration.json`.\n",
+                        "Inspect `.agent/repo/` and `.agent/integration.json`. Resolve manually or move this task to `needs_revision/` to ask a worker to amend it.\n",
                         encoding="utf-8",
                     )
                     move_task(self.config, task, "needs_human")
             count += 1
         return count
 
-    async def synthesis_scheduler_loop(self) -> None:
-        while not self.stop_event.is_set():
-            try:
-                if self.config.synthesis.enabled:
-                    self.maybe_create_synthesis_task()
-            except Exception as exc:
-                print(f"[synthesis] error: {exc}", flush=True)
-            await asyncio.sleep(self.config.synthesis.check_interval_seconds)
-
-    def maybe_create_synthesis_task(self) -> None:
-        inbox_notes = self.config.repo_path / "knowledge" / "inbox"
-        notes = [p for p in inbox_notes.glob("**/*") if p.is_file() and p.name != ".gitkeep"] if inbox_notes.exists() else []
-        if len(notes) < self.config.synthesis.min_inbox_notes:
-            return
-        state_path = self.config.tasks_path / ".system" / "synthesis_state.json"
-        state = read_json(state_path, {}) or {}
-        last = float(state.get("last_created_ts", 0))
-        if time.time() - last < self.config.synthesis.interval_seconds:
-            return
-        # Avoid duplicates if a synthesis task is already active.
-        for state_dir in ["inbox", "running", "needs_human", "done", "failed"]:
-            d = self.config.tasks_path / state_dir
-            if d.exists() and any("synthesize-knowledge" in p.name for p in d.iterdir()):
-                # Allow another after the interval only if prior done tasks are all integrated.
-                if state_dir in {"inbox", "running", "needs_human"}:
-                    return
-        name = f"synthesize-knowledge-{int(time.time())}"
-        create_inbox_task(self.config, name, {"instructions.md": synthesis_task_text()})
-        ensure_dir(state_path.parent)
-        atomic_write_json(state_path, {"last_created_ts": time.time(), "last_created_at": iso_now(), "note_count": len(notes)})
+    def iter_revision_tasks(self) -> list[Path]:
+        revision_dir = self.config.tasks_path / "needs_revision"
+        if not revision_dir.exists():
+            return []
+        return sorted([p for p in revision_dir.iterdir() if p.is_dir() and not p.name.startswith(".")])
 
     async def janitor_loop(self) -> None:
         while not self.stop_event.is_set():
@@ -245,7 +224,7 @@ class InboxSwarmDaemon:
 def status_summary(config: Config) -> dict[str, Any]:
     ensure_task_dirs(config)
     tasks = {}
-    for state in ["inbox", "running", "needs_human", "done", "failed", "dead_letter"]:
+    for state in ["inbox", "running", "needs_revision", "needs_human", "done", "failed", "dead_letter"]:
         d = config.tasks_path / state
         tasks[state] = len([p for p in d.iterdir() if not p.name.startswith(".")]) if d.exists() else 0
     pending_integrations = [p.name for p in list_pending_integrations(config)]

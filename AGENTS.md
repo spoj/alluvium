@@ -1,11 +1,11 @@
-# Inbox Swarm Development Notes
+# Alluvium Development Notes
 
 Use `uv` for all Python commands:
 
 ```bash
 uv sync --dev
 uv run pytest
-uv run swarm-inbox --help
+uv run alluvium --help
 ```
 
 Project conventions:

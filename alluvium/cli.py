@@ -7,17 +7,17 @@ import sys
 from pathlib import Path
 
 from .config import Config, default_config_text, load_config
-from .daemon import InboxSwarmDaemon, status_summary
+from .daemon import AlluviumDaemon, status_summary
 from .fsqueue import ensure_task_dirs
 from .gitops import init_repo_if_needed
 from .util import ensure_dir
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="swarm-inbox", description="Free-form task inbox daemon for coding agents.")
+    parser = argparse.ArgumentParser(prog="alluvium", description="Free-form task inbox daemon for coding agents.")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    init = sub.add_parser("init", help="Initialize an Inbox Swarm root directory.")
+    init = sub.add_parser("init", help="Initialize an Alluvium root directory.")
     init.add_argument("root", nargs="?", default=".", help="Root directory to initialize.")
     init.add_argument("--force", action="store_true", help="Overwrite config.toml if it exists.")
 
@@ -36,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     example = sub.add_parser("example-task", help="Drop an example task into tasks/inbox.")
     example.add_argument("--config", default="config.toml")
-    example.add_argument("name", nargs="?", default="hello-inbox-swarm")
+    example.add_argument("name", nargs="?", default="hello-alluvium")
 
     return parser
 
@@ -53,15 +53,15 @@ def cmd_init(args: argparse.Namespace) -> int:
     ensure_dir(config.root)
     ensure_task_dirs(config)
     init_repo_if_needed(config)
-    print(f"Initialized Inbox Swarm at {root}")
+    print(f"Initialized Alluvium at {root}")
     print(f"Drop folders or bare files into: {config.tasks_path / 'inbox'}")
-    print(f"Run: swarm-inbox daemon --config {config_path}")
+    print(f"Run: alluvium daemon --config {config_path}")
     return 0
 
 
 async def cmd_daemon(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config))
-    daemon = InboxSwarmDaemon(config)
+    daemon = AlluviumDaemon(config)
     await daemon.run()
     return 0
 
@@ -70,14 +70,14 @@ async def cmd_run_once(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config))
     if args.ignore_settle:
         config.safety.inbox_settle_seconds = 0
-    daemon = InboxSwarmDaemon(config)
+    daemon = AlluviumDaemon(config)
     await daemon.run_once()
     return 0
 
 
 async def cmd_integrate_once(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config))
-    daemon = InboxSwarmDaemon(config)
+    daemon = AlluviumDaemon(config)
     count = await daemon.integrate_ready_done_tasks(limit=None)
     print(json.dumps({"integrated_or_checked": count}, indent=2))
     return 0

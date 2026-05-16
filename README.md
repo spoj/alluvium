@@ -1,8 +1,8 @@
-# Swarm Inbox
+# Alluvium
 
-Swarm Inbox is a local-first task inbox daemon for running commodity coding agents concurrently.
+Alluvium is a local-first task inbox daemon for running commodity coding agents concurrently.
 
-The Python package and primary CLI are named `swarm-inbox`. A backwards-compatible `inbox-swarm` command is also installed.
+The primary CLI is named `alluvium`. The PyPI distribution is `alluvium-swarm` because the bare `alluvium` package name is already taken on PyPI.
 
 The public API is intentionally tiny:
 
@@ -13,7 +13,7 @@ It is designed for workflows like:
 - incoming files that should be summarized or ingested into long-term knowledge,
 - mail/upload/folder watchers that dump task folders into a local inbox,
 - concurrent coding-agent tasks in isolated worktrees,
-- self-improving `knowledge/` and `skills/` repositories over time.
+- self-improving durable repositories containing code, docs, knowledge, skills, tests, or any other project state.
 
 ## Status
 
@@ -26,12 +26,13 @@ agent-system/
   tasks/
     inbox/          # public drop zone: folders or bare files
     running/        # currently being worked
-    needs_human/    # blocked on clarification/approval/integration conflict
+    needs_revision/ # integrator returned task to worker for amendment
+    needs_human/    # blocked on clarification/approval/manual intervention
     done/           # worker finished; integration status is in .agent/integration.json
     failed/         # worker failed
     dead_letter/    # reserved for invalid/repeatedly failed tasks
 
-  repo/             # long-term Git repo: knowledge, skills, code, docs
+  repo/             # long-term Git repo: code, docs, knowledge, skills, tests, etc.
   worktrees/        # one worktree per task
   config.toml
 ```
@@ -69,30 +70,30 @@ The daemon does not pre-classify tasks. The agent infers meaning from the free-f
 After PyPI publication:
 
 ```bash
-uv tool install swarm-inbox
+uv tool install alluvium-swarm
 # or without installing permanently:
-uvx swarm-inbox --help
+uvx --from alluvium-swarm alluvium --help
 ```
 
 From GitHub before PyPI publication:
 
 ```bash
-uv tool install git+https://github.com/spoj/inbox-swarm
+uv tool install git+https://github.com/spoj/alluvium
 ```
 
 ## Development with uv
 
 ```bash
-git clone https://github.com/spoj/inbox-swarm
-cd inbox-swarm
+git clone https://github.com/spoj/alluvium
+cd alluvium
 uv sync --dev
-uv run swarm-inbox --help
+uv run alluvium --help
 uv run pytest
 ```
 
 ## Publishing to PyPI
 
-The intended PyPI distribution name is `swarm-inbox`.
+The intended PyPI distribution name is `alluvium-swarm`. The installed command is `alluvium`.
 
 Build locally:
 
@@ -115,13 +116,13 @@ Initialize a system root in the current directory:
 ```bash
 mkdir agent-system
 cd agent-system
-swarm-inbox init
+alluvium init
 ```
 
 Or initialize a specific path:
 
 ```bash
-swarm-inbox init ~/agent-system
+alluvium init ~/agent-system
 cd ~/agent-system
 ```
 
@@ -134,19 +135,19 @@ echo "Please summarize this." > tasks/inbox/request.txt
 Run once:
 
 ```bash
-swarm-inbox run-once --ignore-settle
+alluvium run-once --ignore-settle
 ```
 
 Or run as a daemon:
 
 ```bash
-swarm-inbox daemon
+alluvium daemon
 ```
 
 Check status:
 
 ```bash
-swarm-inbox status
+alluvium status
 ```
 
 ## Using a real coding agent
@@ -163,12 +164,12 @@ timeout_seconds = 3600
 The daemon provides environment variables too:
 
 ```text
-INBOX_SWARM_TASK_ID
-INBOX_SWARM_TASK_DIR
-INBOX_SWARM_AGENT_DIR
-INBOX_SWARM_WORKTREE
-INBOX_SWARM_BRANCH
-INBOX_SWARM_PROMPT_FILE
+ALLUVIUM_TASK_ID
+ALLUVIUM_TASK_DIR
+ALLUVIUM_AGENT_DIR
+ALLUVIUM_WORKTREE
+ALLUVIUM_BRANCH
+ALLUVIUM_PROMPT_FILE
 ```
 
 The generated prompt asks the worker to:
@@ -176,8 +177,9 @@ The generated prompt asks the worker to:
 - inspect the free-form task folder,
 - write `.agent/understanding.md`, `.agent/plan.md`, `.agent/result.md`, and `.agent/result.json`,
 - put artifacts under `.agent/outputs/`,
-- commit useful repo changes on the task branch,
+- commit useful repo changes directly on the task branch,
 - request human help by writing `.agent/needs_human.md`,
+- address integrator feedback from `.agent/revision_request.md` when returned,
 - log external effects under `.agent/effects/ledger.jsonl`.
 
 ## Integration model
@@ -202,44 +204,29 @@ If it has changes:
 {"status": "pending", "has_repo_changes": true, "branch": "task/..."}
 ```
 
-The integrator loop scans `tasks/done/` for pending integrations, performs a squash merge into `main`, runs configured tests, and updates the integration status to `merged`, `noop`, or `blocked`.
+The integrator loop scans `tasks/done/` for pending integrations, performs a squash merge into `main`, runs configured tests, and updates the integration status to `merged`, `noop`, `needs_revision`, or `blocked`.
 
-Blocked integrations can be moved to `tasks/needs_human/`.
-
-## Knowledge and skills conventions
-
-The initialized repo contains:
+If a merge conflict or integration test failure is likely fixable by the worker, the integrator writes:
 
 ```text
-repo/
-  knowledge/
-    curated/
-    inbox/
-    sources/
-  skills/
-    approved/
-    proposed/
+.agent/revision_request.md
 ```
 
-Recommended conventions:
+and moves the task to:
 
-- Workers write per-task knowledge notes to `knowledge/inbox/`.
-- Workers write source metadata to `knowledge/sources/`.
-- Workers propose generated tools under `skills/proposed/`.
-- `skills/approved/` is treated as read-only unless a task is explicitly a skill-review task.
-- A synthesis task can periodically compress accepted notes into `knowledge/curated/`.
-
-Optional synthesis scheduling can be enabled in `config.toml`:
-
-```toml
-[synthesis]
-enabled = true
-min_inbox_notes = 10
-interval_seconds = 86400
-check_interval_seconds = 300
+```text
+tasks/needs_revision/
 ```
 
-Synthesis is implemented as a normal internally-created inbox task, so it goes through the same worker/worktree/integration flow.
+The coordinator then re-runs a worker on the same task ID, branch, and worktree so it can amend the branch. After the worker finishes, the task returns to `done/` and integration is attempted again. After `max_revision_rounds`, or for unrevisionable problems, the task is moved to `needs_human/`.
+
+## Durable repo conventions
+
+Alluvium does not impose a special knowledge/proposal topology. The durable repo is just a Git repository. It may contain code, docs, knowledge, skills, tests, generated assets, or anything else your project needs.
+
+Workers are expected to make the branch correct as a whole. The integrator acts like a repo maintainer: it serially reviews, tests, merges, or sends the task back for amendment.
+
+Project-specific conventions should live in `repo/AGENTS.md`.
 
 ## Inbox publishing safety
 
@@ -266,13 +253,13 @@ The daemon wraps the file into a unique task folder when claiming it.
 
 ```ini
 [Unit]
-Description=Inbox Swarm Daemon
+Description=Alluvium Daemon
 After=network.target
 
 [Service]
 Type=simple
 WorkingDirectory=/home/me/agent-system
-ExecStart=/home/me/.local/bin/swarm-inbox daemon --config /home/me/agent-system/config.toml
+ExecStart=/home/me/.local/bin/alluvium daemon --config /home/me/agent-system/config.toml
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM
@@ -286,9 +273,9 @@ Then:
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable inbox-swarm
-systemctl --user start inbox-swarm
-journalctl --user -u inbox-swarm -f
+systemctl --user enable alluvium
+systemctl --user start alluvium
+journalctl --user -u alluvium -f
 ```
 
 ## Design tradeoffs
@@ -296,6 +283,7 @@ journalctl --user -u inbox-swarm -f
 - The inbox is free-form; `.agent/` is the only reserved task subtree.
 - Every task gets a branch/worktree, even if no repo changes are ultimately made.
 - `done/` means the worker finished. Integration status is separate and stored inside `.agent/integration.json`.
+- `needs_revision/` is the send-back primitive: the same task branch is re-run and amended.
 - Workers may run concurrently; `main` integration is serialized.
 - The default crash recovery is conservative: interrupted `running/` tasks move to `failed/` on daemon restart.
 
