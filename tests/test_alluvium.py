@@ -8,6 +8,7 @@ from alluvium.config import default_config_text, load_config
 from alluvium.daemon import AlluviumDaemon
 from alluvium.fsqueue import ensure_task_dirs
 from alluvium.gitops import init_repo_if_needed
+from alluvium.store import task_row, tasks_by_state, upsert_task
 
 
 def make_system(tmp_path: Path):
@@ -24,17 +25,17 @@ def make_system(tmp_path: Path):
 
 def test_bare_file_inbox_item_is_wrapped_and_completed(tmp_path: Path):
     config = make_system(tmp_path)
-    (config.tasks_path / "inbox" / "note.txt").write_text("hello", encoding="utf-8")
+    (config.inbox_path / "note.txt").write_text("hello", encoding="utf-8")
 
     asyncio.run(AlluviumDaemon(config).run_once())
 
-    done = [p for p in (config.tasks_path / "done").iterdir() if p.is_dir()]
+    done = tasks_by_state(config, "done")
     assert len(done) == 1
     task = done[0]
     assert task.name.endswith("note.txt-" + task.name.rsplit("-", 1)[-1]) or "note.txt" in task.name
-    assert (task / "note.txt").read_text(encoding="utf-8") == "hello"
+    assert (task / "input" / "note.txt").read_text(encoding="utf-8") == "hello"
     inventory = json.loads((task / ".agent" / "outputs" / "inventory.json").read_text(encoding="utf-8"))
-    assert inventory == [{"path": "note.txt", "size": 5}]
+    assert inventory == [{"path": "input/note.txt", "size": 5}]
     integration = json.loads((task / ".agent" / "integration.json").read_text(encoding="utf-8"))
     assert integration["status"] == "noop"
     assert integration["has_repo_changes"] is False
@@ -43,17 +44,17 @@ def test_bare_file_inbox_item_is_wrapped_and_completed(tmp_path: Path):
 def test_directory_duplicate_names_get_unique_internal_ids(tmp_path: Path):
     config = make_system(tmp_path)
 
-    first = config.tasks_path / "inbox" / "same-name"
+    first = config.inbox_path / "same-name"
     first.mkdir()
     (first / "a.txt").write_text("a", encoding="utf-8")
     asyncio.run(AlluviumDaemon(config).run_once())
 
-    second = config.tasks_path / "inbox" / "same-name"
+    second = config.inbox_path / "same-name"
     second.mkdir()
     (second / "b.txt").write_text("b", encoding="utf-8")
     asyncio.run(AlluviumDaemon(config).run_once())
 
-    done = sorted([p.name for p in (config.tasks_path / "done").iterdir() if p.is_dir()])
+    done = sorted([p.name for p in tasks_by_state(config, "done")])
     assert len(done) == 2
     assert done[0] != done[1]
     assert all("same-name" in name for name in done)
@@ -80,19 +81,52 @@ agent = task_dir / '.agent'
     )
     config.agent.command = ["python", str(agent_script)]
 
-    task = config.tasks_path / "inbox" / "repo-task"
+    task = config.inbox_path / "repo-task"
     task.mkdir()
     (task / "request.md").write_text("add note", encoding="utf-8")
 
     asyncio.run(AlluviumDaemon(config).run_once())
 
     assert (config.repo_path / "note.md").read_text(encoding="utf-8") == "# Note\n"
-    done = [p for p in (config.tasks_path / "done").iterdir() if p.is_dir()]
+    done = tasks_by_state(config, "done")
     assert len(done) == 1
     integration = json.loads((done[0] / ".agent" / "integration.json").read_text(encoding="utf-8"))
     assert integration["status"] == "merged"
     assert integration["has_repo_changes"] is True
     assert "merge_commit" in integration
+
+
+def test_reconcile_reconstructs_orphan_task_folder(tmp_path: Path):
+    config = make_system(tmp_path)
+    task = config.tasks_path / "manual-task"
+    (task / "input").mkdir(parents=True)
+    (task / "input" / "request.md").write_text("hello", encoding="utf-8")
+    agent = task / ".agent"
+    agent.mkdir()
+    (agent / "result.json").write_text(json.dumps({"status": "succeeded"}), encoding="utf-8")
+
+    asyncio.run(AlluviumDaemon(config).run_once())
+
+    row = task_row(config, "manual-task")
+    assert row is not None
+    assert row["state"] == "done"
+
+
+def test_reconcile_marks_missing_task_folder_lost(tmp_path: Path):
+    config = make_system(tmp_path)
+    task = config.tasks_path / "missing-task"
+    (task / "input").mkdir(parents=True)
+    (task / ".agent" / "system").mkdir(parents=True)
+    upsert_task(config, task, "queued")
+    import shutil
+
+    shutil.rmtree(task)
+
+    asyncio.run(AlluviumDaemon(config).run_once())
+
+    row = task_row(config, "missing-task")
+    assert row is not None
+    assert row["state"] == "lost"
 
 
 def test_integration_can_send_back_for_revision_and_worker_amends(tmp_path: Path):
@@ -118,13 +152,13 @@ agent = task_dir / '.agent'
     )
     config.agent.command = ["python", str(first_agent)]
 
-    task = config.tasks_path / "inbox" / "needs-revision"
+    task = config.inbox_path / "needs-revision"
     task.mkdir()
     (task / "request.md").write_text("make required.txt", encoding="utf-8")
 
     asyncio.run(AlluviumDaemon(config).run_once())
 
-    revisions = [p for p in (config.tasks_path / "needs_revision").iterdir() if p.is_dir()]
+    revisions = tasks_by_state(config, "needs_revision")
     assert len(revisions) == 1
     revision_task = revisions[0]
     assert (revision_task / ".agent" / "revision_request.md").exists()
@@ -156,7 +190,7 @@ assert (agent / 'revision_request.md').exists()
 
     assert (config.repo_path / "almost.txt").read_text(encoding="utf-8") == "not enough\n"
     assert (config.repo_path / "required.txt").read_text(encoding="utf-8") == "ok\n"
-    done = [p for p in (config.tasks_path / "done").iterdir() if p.is_dir()]
+    done = tasks_by_state(config, "done")
     assert len(done) == 1
     integration = json.loads((done[0] / ".agent" / "integration.json").read_text(encoding="utf-8"))
     assert integration["status"] == "merged"

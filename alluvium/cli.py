@@ -14,6 +14,7 @@ from .config import default_config_text, load_config
 from .daemon import AlluviumDaemon, pid_is_running, read_daemon_pid, status_summary
 from .fsqueue import ensure_task_dirs
 from .gitops import init_repo_if_needed
+from .store import init_store
 from .util import ensure_dir
 
 
@@ -25,11 +26,14 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("root", nargs="?", default=".", help="Root directory to initialize.")
     init.add_argument("--force", action="store_true", help="Overwrite config.toml if it exists.")
 
-    daemon = sub.add_parser("daemon", help="Start the long-running daemon in the background by default.")
-    daemon.add_argument("--config", default="config.toml", help="Path to config.toml.")
-    daemon.add_argument("--foreground", action="store_true", help="Run in the foreground instead of spawning a background daemon.")
+    serve = sub.add_parser("serve", help="Run the local Alluvium runner in the foreground.")
+    serve.add_argument("--config", default="config.toml", help="Path to config.toml.")
 
-    stop = sub.add_parser("stop-daemon", help="Stop the background daemon.")
+    daemon = sub.add_parser("daemon", help="Compatibility wrapper: start the runner in the background by default.")
+    daemon.add_argument("--config", default="config.toml", help="Path to config.toml.")
+    daemon.add_argument("--foreground", action="store_true", help="Run in the foreground instead of spawning a background runner.")
+
+    stop = sub.add_parser("stop-daemon", help="Stop the background runner.")
     stop.add_argument("--config", default="config.toml")
     stop.add_argument("--timeout", type=float, default=20.0, help="Seconds to wait for graceful shutdown.")
     stop.add_argument("--force", action="store_true", help="Send SIGKILL if the daemon does not stop before timeout.")
@@ -47,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status", help="Print JSON status summary.")
     status.add_argument("--config", default="config.toml")
 
-    example = sub.add_parser("example-task", help="Drop an example task into tasks/inbox.")
+    example = sub.add_parser("example-task", help="Drop an example task into inbox/.")
     example.add_argument("--config", default="config.toml")
     example.add_argument("name", nargs="?", default="hello-alluvium")
 
@@ -65,11 +69,18 @@ def cmd_init(args: argparse.Namespace) -> int:
     config = load_config(config_path)
     ensure_dir(config.root)
     ensure_task_dirs(config)
+    init_store(config)
     init_repo_if_needed(config)
     print(f"Initialized Alluvium at {root}")
-    print(f"Drop folders or bare files into: {config.tasks_path / 'inbox'}")
+    print(f"Drop folders or bare files into: {config.inbox_path}")
     print(f"Run: alluvium daemon --config {config_path}")
     return 0
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    config_path = Path(args.config).expanduser().resolve()
+    config = load_config(config_path)
+    return asyncio.run(_run_daemon_foreground(config, config_path))
 
 
 def cmd_daemon(args: argparse.Namespace) -> int:
@@ -99,7 +110,7 @@ def start_background_daemon(config, config_path: Path) -> int:
         config.pid_path.unlink(missing_ok=True)
 
     log_fh = config.daemon_log_path.open("ab")
-    command = [sys.executable, "-m", "alluvium.cli", "daemon", "--config", str(config_path), "--foreground"]
+    command = [sys.executable, "-m", "alluvium.cli", "serve", "--config", str(config_path)]
     proc = subprocess.Popen(
         command,
         cwd=str(config.root),
@@ -208,12 +219,12 @@ def cmd_status(args: argparse.Namespace) -> int:
 def cmd_example_task(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config))
     ensure_task_dirs(config)
-    target = config.tasks_path / "inbox" / args.name
+    target = config.inbox_path / args.name
     if target.exists():
         i = 1
-        while (config.tasks_path / "inbox" / f"{args.name}-{i}").exists():
+        while (config.inbox_path / f"{args.name}-{i}").exists():
             i += 1
-        target = config.tasks_path / "inbox" / f"{args.name}-{i}"
+        target = config.inbox_path / f"{args.name}-{i}"
     ensure_dir(target)
     (target / "request.md").write_text(
         "# Example task\n\nSummarize this task folder and produce any useful output artifacts.\n",
@@ -228,6 +239,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "init":
         return cmd_init(args)
+    if args.command == "serve":
+        return cmd_serve(args)
     if args.command == "daemon":
         return cmd_daemon(args)
     if args.command == "stop-daemon":

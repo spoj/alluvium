@@ -20,7 +20,7 @@ def inventory(task_dir: Path, reserved: str = ".agent") -> list[dict[str, object
                 size = p.stat().st_size
             except FileNotFoundError:
                 size = 0
-            rows.append({"path": str(rel), "size": size})
+            rows.append({"path": rel.as_posix(), "size": size})
     return rows
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import tomllib
 from dataclasses import dataclass, field
@@ -60,6 +61,7 @@ class SafetyConfig:
 class Config:
     root: Path
     repo_path: Path
+    inbox_path: Path
     tasks_path: Path
     worktrees_path: Path
     logs_path: Path
@@ -107,6 +109,7 @@ def load_config(path: Path) -> Config:
 
     root = _path(raw.get("root", "."), base)
     repo_path = _path(raw.get("repo_path", "repo"), root)
+    inbox_path = _path(raw.get("inbox_path", "inbox"), root)
     tasks_path = _path(raw.get("tasks_path", "tasks"), root)
     worktrees_path = _path(raw.get("worktrees_path", "worktrees"), root)
     logs_path = _path(raw.get("logs_path", "logs"), root)
@@ -154,6 +157,7 @@ def load_config(path: Path) -> Config:
     return Config(
         root=root,
         repo_path=repo_path,
+        inbox_path=inbox_path,
         tasks_path=tasks_path,
         worktrees_path=worktrees_path,
         logs_path=logs_path,
@@ -167,11 +171,14 @@ def load_config(path: Path) -> Config:
 
 def default_config_text(root: Path) -> str:
     root = root.resolve()
+    root_toml = json.dumps(str(root))
+    python_toml = json.dumps(sys.executable)
     return f'''# Alluvium configuration.
-# Run with: alluvium daemon --config {root / "config.toml"}
+# Run with: alluvium serve --config {root / "config.toml"}
 
-root = "{root}"
+root = {root_toml}
 repo_path = "repo"
+inbox_path = "inbox"
 tasks_path = "tasks"
 worktrees_path = "worktrees"
 logs_path = "logs"
@@ -180,7 +187,7 @@ reserved_dir = ".agent"
 [agent]
 # Default is the deterministic built-in agent. Replace with a commodity coding agent.
 # Placeholders: {{task_id}}, {{task_dir}}, {{agent_dir}}, {{worktree}}, {{branch}}, {{prompt_file}}
-command = ["{sys.executable}", "-m", "alluvium.builtin_agent", "--task-dir", "{{task_dir}}", "--worktree", "{{worktree}}", "--prompt-file", "{{prompt_file}}"]
+command = [{python_toml}, "-m", "alluvium.builtin_agent", "--task-dir", "{{task_dir}}", "--worktree", "{{worktree}}", "--prompt-file", "{{prompt_file}}"]
 timeout_seconds = 3600
 
 [integration]

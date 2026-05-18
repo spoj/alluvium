@@ -1,8 +1,10 @@
 # Alluvium
 
-Alluvium is a local-first task inbox daemon for running coding agents concurrently.
+Alluvium is a small, local-first runner for coding agents.
 
-You drop free-form folders or bare files into `tasks/inbox/`. Alluvium assigns each item a unique task ID, runs an agent in an isolated Git worktree/branch, stores task-local artifacts under `.agent/`, and serially integrates any durable repository changes.
+You drop free-form folders or bare files into `inbox/`. Alluvium claims each item into a stable `tasks/<task-id>/` artifact folder, runs a low number of workers optimistically in isolated Git worktrees/branches, records task-local artifacts under `.agent/`, stores authoritative task state in a local SQLite database, and serially integrates durable repository changes through temporary integration worktrees.
+
+The design goal is boring robustness over elaborate multi-agent choreography: a filesystem inbox, a tiny state index, bounded worker concurrency, explicit artifacts, and Git as the durable integration boundary.
 
 The CLI is `alluvium`. The PyPI distribution is `alluvium-swarm` because the bare `alluvium` package name is already taken.
 
@@ -22,16 +24,18 @@ cd my-alluvium
 alluvium init
 ```
 
-Start the daemon in the background:
+Run the local runner in the foreground:
 
 ```bash
-alluvium daemon
+alluvium serve
 ```
+
+For supervised/background use, prefer systemd, launchd, Windows service wrappers, Docker, or your normal process supervisor. `alluvium daemon` remains as a compatibility convenience wrapper.
 
 Drop work into the inbox:
 
 ```bash
-echo "Please summarize this." > tasks/inbox/request.txt
+echo "Please summarize this." > inbox/request.txt
 ```
 
 Check progress:
@@ -59,63 +63,60 @@ alluvium daemon --foreground
 ```text
 my-alluvium/
   config.toml
-  tasks/
-    inbox/          # public drop zone: folders or bare files
-    running/        # currently being worked
-    needs_revision/ # integrator sent task back to worker for amendment
-    needs_human/    # blocked on clarification/approval/manual intervention
-    done/           # worker finished; integration status is in .agent/integration.json
-    failed/         # worker failed
-    dead_letter/    # reserved for invalid/repeatedly failed tasks
+  inbox/            # public drop zone: folders or bare files not yet claimed
+  tasks/            # stable system-owned task folders; state lives in SQLite
+    <task-id>/
+      input/        # original producer files
+      .agent/       # prompts, logs, outputs, repo metadata, results
   repo/             # durable Git repo: code, docs, knowledge, skills, tests, etc.
   worktrees/        # one Git worktree per active task
   logs/
-  .alluvium/        # daemon pid/lock files
+  .alluvium/        # lock/pid files and alluvium.db SQLite state index
 ```
 
 A bare file is wrapped into a task folder automatically:
 
 ```text
-tasks/inbox/report.pdf
+inbox/report.pdf
   ↓
-tasks/running/20260516T101530Z-report.pdf-c771aa/
-  report.pdf
+tasks/20260516T101530Z-report.pdf-c771aa/
+  input/
+    report.pdf
   .agent/
 ```
 
 A dropped folder keeps its contents but receives a unique internal name:
 
 ```text
-tasks/inbox/acme-contract/
+inbox/acme-contract/
   contract.pdf
   request.md
   ↓
-tasks/running/20260516T101530Z-acme-contract-a8f2c1/
-  contract.pdf
-  request.md
+tasks/20260516T101530Z-acme-contract-a8f2c1/
+  input/
+    contract.pdf
+    request.md
   .agent/
 ```
 
-`.agent/` is reserved runtime state. If a producer supplies `.agent/` in an inbox item, Alluvium quarantines it and creates a fresh trusted `.agent/` subtree.
+`.agent/` is reserved runtime state at the task root. Producer files are always moved under `input/`, so a producer-supplied `.agent/` is treated as ordinary untrusted input at `input/.agent/` rather than trusted runtime state.
 
 ## Lifecycle
 
 ```text
-tasks/inbox/
-  ↓
-tasks/running/
-  ↓
-tasks/done/
-  ↓ integrator reviews branch
-      ├── noop
-      ├── merged
-      ├── needs_revision → same task/branch is re-run and amended
-      └── needs_human
+inbox/
+  ↓ claim into stable tasks/<task-id>/
+SQLite state:
+  queued → running → worker_done → integrating
+                                  ├── done/noop
+                                  ├── done/merged
+                                  ├── needs_revision → same task/branch is re-run and amended
+                                  └── needs_human
 ```
 
-Workers may run concurrently. Integration into `repo/main` is serialized.
+Workers may run concurrently, but the default is intentionally low. Integration into `repo/main` is serialized and tested in a temporary integration worktree before the base branch is advanced.
 
-`done/` means the worker completed. It does **not** necessarily mean the branch is already merged. Integration state is stored in:
+The task folder does not move when state changes. SQLite is authoritative for state; integration details are also stored in:
 
 ```text
 .agent/integration.json
@@ -141,7 +142,7 @@ When revision is needed, the integrator writes:
 .agent/revision_request.md
 ```
 
-and moves the task to `tasks/needs_revision/`. The coordinator re-runs a worker on the same task ID, branch, and worktree so it can amend the branch.
+and marks the task `needs_revision` in SQLite. The coordinator re-runs a worker on the same task ID, branch, stable task folder, and worktree so it can amend the branch.
 
 ## Configure a real coding agent
 
@@ -196,8 +197,9 @@ Pi runs from the task worktree. The prompt file includes the absolute task folde
 
 ```bash
 alluvium init [path]                 # initialize workspace
-alluvium daemon                      # start background daemon
-alluvium daemon --foreground         # foreground/debug mode
+alluvium serve                       # foreground local runner
+alluvium daemon                      # compatibility: start background runner
+alluvium daemon --foreground         # compatibility foreground mode
 alluvium reload                      # SIGHUP daemon to reload config.toml
 alluvium stop-daemon                 # graceful stop
 alluvium stop-daemon --force         # SIGKILL if graceful stop times out
@@ -227,16 +229,16 @@ The daemon waits for inbox items to be unchanged for `inbox_settle_seconds` befo
 For producer programs, prefer atomic publish:
 
 ```text
-tasks/inbox/.some-task.tmp/
+inbox/.some-task.tmp/
   files...
   ↓ rename when complete
-tasks/inbox/some-task/
+inbox/some-task/
 ```
 
 Bare files are supported too:
 
 ```text
-tasks/inbox/report.pdf
+inbox/report.pdf
 ```
 
 ## Durable repo conventions
@@ -280,7 +282,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/home/me/my-alluvium
-ExecStart=/home/me/.local/bin/alluvium daemon --foreground --config /home/me/my-alluvium/config.toml
+ExecStart=/home/me/.local/bin/alluvium serve --config /home/me/my-alluvium/config.toml
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM

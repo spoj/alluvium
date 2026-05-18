@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -171,10 +172,10 @@ def main_is_clean(config: Config) -> bool:
     return not git(config, "status", "--porcelain").strip()
 
 
-def run_integration_tests(config: Config) -> tuple[bool, list[dict[str, Any]]]:
+def run_integration_tests(config: Config, *, cwd: Path | None = None) -> tuple[bool, list[dict[str, Any]]]:
     results: list[dict[str, Any]] = []
     for command in config.integration.run_tests:
-        proc = run_cmd(command, cwd=config.repo_path, env=git_env(config), check=False, shell=True)
+        proc = run_cmd(command, cwd=cwd or config.repo_path, env=git_env(config), check=False, shell=True)
         ok = proc.returncode == 0
         results.append(
             {
@@ -235,10 +236,11 @@ def _return_for_revision_or_block(
 
 
 def integrate_task(config: Config, task_dir: Path) -> dict[str, Any]:
-    """Serially integrate a done task's branch into the base branch.
+    """Serially integrate a done task branch via a temporary worktree.
 
-    Returns the new integration status payload. On conflicts/test failures, the
-    base worktree is reset to a clean state and the task is marked blocked.
+    The canonical repo worktree is kept clean while merge attempts and tests run
+    elsewhere. Only after the temporary integration branch passes do we
+    fast-forward the configured base branch.
     """
     integration_path = integration_json_path(config, task_dir)
     import json
@@ -267,75 +269,116 @@ def integrate_task(config: Config, task_dir: Path) -> dict[str, Any]:
         )
 
     base = config.integration.base_branch
-    git(config, "checkout", base)
+    base_head = current_commit(config, base)
+    token = uuid.uuid4().hex[:8]
+    integration_branch = f"alluvium/integrate/{task_dir.name}-{token}"
+    integration_worktree = config.worktrees_path / f".integrate-{task_dir.name}-{token}"
 
-    merge = run_cmd(["git", "merge", "--squash", branch], cwd=config.repo_path, env=git_env(config), check=False)
-    if merge.returncode != 0:
-        conflict_text = f"STDOUT:\n{merge.stdout}\n\nSTDERR:\n{merge.stderr}\n"
-        atomic_write_text(task_dir / config.reserved_dir / "repo" / "integration_conflict.txt", conflict_text)
-        run_cmd(["git", "reset", "--hard", "HEAD"], cwd=config.repo_path, env=git_env(config), check=False)
-        return _return_for_revision_or_block(
-            config,
-            task_dir,
-            integration,
-            reason="merge conflict",
-            revisionable=True,
-            details=conflict_text,
-            extra={"merge_stdout": merge.stdout[-8000:], "merge_stderr": merge.stderr[-8000:]},
+    def cleanup_integration_workspace() -> None:
+        run_cmd(["git", "worktree", "remove", "--force", str(integration_worktree)], cwd=config.repo_path, env=git_env(config), check=False)
+        if integration_worktree.exists():
+            shutil.rmtree(integration_worktree, ignore_errors=True)
+        run_cmd(["git", "branch", "-D", integration_branch], cwd=config.repo_path, env=git_env(config), check=False)
+
+    try:
+        if integration_worktree.exists():
+            shutil.rmtree(integration_worktree)
+        run_cmd(
+            ["git", "worktree", "add", "-b", integration_branch, str(integration_worktree), base],
+            cwd=config.repo_path,
+            env=git_env(config),
+            check=True,
         )
 
-    tests_ok, test_results = run_integration_tests(config)
-    atomic_write_json(task_dir / config.reserved_dir / "repo" / "integration_tests.json", test_results)
-    if not tests_ok:
-        run_cmd(["git", "reset", "--hard", "HEAD"], cwd=config.repo_path, env=git_env(config), check=False)
-        return _return_for_revision_or_block(
-            config,
-            task_dir,
-            integration,
-            reason="integration tests failed",
-            revisionable=True,
-            details=json.dumps(test_results, indent=2),
-            extra={"tests": test_results},
-        )
+        merge = run_cmd(["git", "merge", "--squash", branch], cwd=integration_worktree, env=git_env(config), check=False)
+        if merge.returncode != 0:
+            conflict_text = f"STDOUT:\n{merge.stdout}\n\nSTDERR:\n{merge.stderr}\n"
+            atomic_write_text(task_dir / config.reserved_dir / "repo" / "integration_conflict.txt", conflict_text)
+            return _return_for_revision_or_block(
+                config,
+                task_dir,
+                integration,
+                reason="merge conflict",
+                revisionable=True,
+                details=conflict_text,
+                extra={"merge_stdout": merge.stdout[-8000:], "merge_stderr": merge.stderr[-8000:]},
+            )
 
-    commit = run_cmd(
-        ["git", "commit", "-m", f"Integrate task {task_dir.name}"],
-        cwd=config.repo_path,
-        env=git_env(config),
-        check=False,
-    )
-    if commit.returncode != 0:
-        # If squash merge staged no diff, treat as noop; otherwise block.
-        if main_is_clean(config):
-            integration.update({"status": "noop", "has_repo_changes": False, "updated_at": iso_now()})
-            atomic_write_json(integration_path, integration)
-            cleanup_task_worktree_and_branch(config, task_dir.name, branch)
-            return integration
-        run_cmd(["git", "reset", "--hard", "HEAD"], cwd=config.repo_path, env=git_env(config), check=False)
-        return _return_for_revision_or_block(
-            config,
-            task_dir,
-            integration,
-            reason="git commit failed",
-            revisionable=False,
-            details=f"STDOUT:\n{commit.stdout}\n\nSTDERR:\n{commit.stderr}\n",
-            extra={"commit_stdout": commit.stdout[-8000:], "commit_stderr": commit.stderr[-8000:]},
-        )
+        tests_ok, test_results = run_integration_tests(config, cwd=integration_worktree)
+        atomic_write_json(task_dir / config.reserved_dir / "repo" / "integration_tests.json", test_results)
+        if not tests_ok:
+            return _return_for_revision_or_block(
+                config,
+                task_dir,
+                integration,
+                reason="integration tests failed",
+                revisionable=True,
+                details=json.dumps(test_results, indent=2),
+                extra={"tests": test_results},
+            )
 
-    merge_commit = current_commit(config, "HEAD")
-    integration.update(
-        {
-            "status": "merged",
-            "has_repo_changes": True,
-            "merge_commit": merge_commit,
-            "merged_at": iso_now(),
-            "tests": test_results,
-            "updated_at": iso_now(),
-        }
-    )
-    atomic_write_json(integration_path, integration)
-    cleanup_task_worktree_and_branch(config, task_dir.name, branch)
-    return integration
+        commit = run_cmd(
+            ["git", "commit", "-m", f"Integrate task {task_dir.name}"],
+            cwd=integration_worktree,
+            env=git_env(config),
+            check=False,
+        )
+        if commit.returncode != 0:
+            # If squash merge staged no diff, treat as noop; otherwise block.
+            if not porcelain_status(integration_worktree).strip():
+                integration.update({"status": "noop", "has_repo_changes": False, "updated_at": iso_now()})
+                atomic_write_json(integration_path, integration)
+                cleanup_task_worktree_and_branch(config, task_dir.name, branch)
+                return integration
+            return _return_for_revision_or_block(
+                config,
+                task_dir,
+                integration,
+                reason="git commit failed",
+                revisionable=False,
+                details=f"STDOUT:\n{commit.stdout}\n\nSTDERR:\n{commit.stderr}\n",
+                extra={"commit_stdout": commit.stdout[-8000:], "commit_stderr": commit.stderr[-8000:]},
+            )
+
+        merge_commit = run_cmd(["git", "rev-parse", "HEAD"], cwd=integration_worktree, env=git_env(config), check=True).stdout.strip()
+        if current_commit(config, base) != base_head:
+            return _return_for_revision_or_block(
+                config,
+                task_dir,
+                integration,
+                reason="base branch advanced during integration",
+                revisionable=True,
+                details=f"Base was {base_head}; now {current_commit(config, base)}. Re-run against the updated base.",
+            )
+
+        git(config, "checkout", base)
+        ff = run_cmd(["git", "merge", "--ff-only", integration_branch], cwd=config.repo_path, env=git_env(config), check=False)
+        if ff.returncode != 0:
+            return _return_for_revision_or_block(
+                config,
+                task_dir,
+                integration,
+                reason="fast-forward integration failed",
+                revisionable=False,
+                details=f"STDOUT:\n{ff.stdout}\n\nSTDERR:\n{ff.stderr}\n",
+                extra={"ff_stdout": ff.stdout[-8000:], "ff_stderr": ff.stderr[-8000:]},
+            )
+
+        integration.update(
+            {
+                "status": "merged",
+                "has_repo_changes": True,
+                "merge_commit": merge_commit,
+                "merged_at": iso_now(),
+                "tests": test_results,
+                "updated_at": iso_now(),
+            }
+        )
+        atomic_write_json(integration_path, integration)
+        cleanup_task_worktree_and_branch(config, task_dir.name, branch)
+        return integration
+    finally:
+        cleanup_integration_workspace()
 
 
 def cleanup_task_worktree_and_branch(config: Config, task_id: str, branch: str) -> None:
@@ -350,11 +393,12 @@ def cleanup_task_worktree_and_branch(config: Config, task_id: str, branch: str) 
 
 
 def list_pending_integrations(config: Config) -> list[Path]:
-    done = config.tasks_path / "done"
     tasks: list[Path] = []
-    if not done.exists():
+    if not config.tasks_path.exists():
         return tasks
-    for task in sorted(done.iterdir()):
+    for task in sorted(config.tasks_path.iterdir()):
+        if not task.is_dir() or task.name.startswith("."):
+            continue
         p = integration_json_path(config, task)
         if not p.exists():
             continue

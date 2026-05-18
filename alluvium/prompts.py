@@ -35,13 +35,14 @@ Git worktree: `{worktree}`
 Git branch: `{branch}`
 Reserved runtime directory: `{task_dir / config.reserved_dir}`
 
-The task folder may contain arbitrary files or a single bare file that has been
-wrapped into this folder. Infer the intended goal from the folder name, obvious
+Original task inputs are under `input/` inside the task folder. A dropped bare
+file is wrapped as `input/<original-name>`; a dropped folder has its contents
+moved under `input/`. Infer the intended goal from the folder name, obvious
 instruction files, emails, documents, attachments, filenames, and context.
 {_revision_context(config, task_dir)}
 ## Required first steps
 
-1. Inspect the task folder, excluding `{config.reserved_dir}/` unless reading prior runtime notes or revision feedback.
+1. Inspect `{task_dir / 'input'}` and any prior runtime notes or revision feedback under `{config.reserved_dir}/`.
 2. Write your interpretation to `{config.reserved_dir}/understanding.md`.
 3. Write your plan to `{config.reserved_dir}/plan.md`.
 
