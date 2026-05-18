@@ -12,15 +12,12 @@ from typing import Any
 class AgentConfig:
     command: list[str] = field(
         default_factory=lambda: [
-            sys.executable,
-            "-m",
-            "alluvium.builtin_agent",
-            "--task-dir",
-            "{task_dir}",
-            "--worktree",
-            "{worktree}",
-            "--prompt-file",
-            "{prompt_file}",
+            "pi",
+            "--model",
+            "gpt5/gpt-5.4:high",
+            "--no-session",
+            "-p",
+            "@{prompt_file}",
         ]
     )
     timeout_seconds: int = 3600
@@ -172,7 +169,6 @@ def load_config(path: Path) -> Config:
 def default_config_text(root: Path) -> str:
     root = root.resolve()
     root_toml = json.dumps(str(root))
-    python_toml = json.dumps(sys.executable)
     return f'''# Alluvium configuration.
 # Run with: alluvium serve --config {root / "config.toml"}
 
@@ -185,9 +181,10 @@ logs_path = "logs"
 reserved_dir = ".agent"
 
 [agent]
-# Default is the deterministic built-in agent. Replace with a commodity coding agent.
-# Placeholders: {{task_id}}, {{task_dir}}, {{agent_dir}}, {{worktree}}, {{branch}}, {{prompt_file}}
-command = [{python_toml}, "-m", "alluvium.builtin_agent", "--task-dir", "{{task_dir}}", "--worktree", "{{worktree}}", "--prompt-file", "{{prompt_file}}"]
+# Default uses pi. Placeholders: {{task_id}}, {{task_dir}}, {{agent_dir}}, {{worktree}}, {{branch}}, {{prompt_file}}
+# For a deterministic smoke-test worker, use:
+# command = ["{sys.executable}", "-m", "alluvium.builtin_agent", "--task-dir", "{{task_dir}}", "--worktree", "{{worktree}}", "--prompt-file", "{{prompt_file}}"]
+command = ["pi", "--model", "gpt5/gpt-5.4:high", "--no-session", "-p", "@{{prompt_file}}"]
 timeout_seconds = 3600
 
 [integration]

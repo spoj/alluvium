@@ -144,11 +144,17 @@ When revision is needed, the integrator writes:
 
 and marks the task `needs_revision` in SQLite. The coordinator re-runs a worker on the same task ID, branch, stable task folder, and worktree so it can amend the branch.
 
-## Configure a real coding agent
+## Configure the worker
 
-The default worker is a deterministic built-in inventory agent. It is useful for smoke tests, but it does not reason or edit meaningfully.
+The default worker command uses `pi` with `gpt5/gpt-5.4:high`:
 
-Edit `config.toml`:
+```toml
+[agent]
+command = ["pi", "--model", "gpt5/gpt-5.4:high", "--no-session", "-p", "@{prompt_file}"]
+timeout_seconds = 3600
+```
+
+Edit `config.toml` to use another coding agent:
 
 ```toml
 [agent]
@@ -178,20 +184,17 @@ The generated prompt asks the worker to:
 - address `.agent/revision_request.md` when returned by the integrator,
 - log external effects under `.agent/effects/ledger.jsonl`.
 
-### Example: use pi as the worker
+### Deterministic smoke-test worker
 
 ```toml
 [agent]
-command = [
-  "pi",
-  "--model", "gpt5/gpt-5.4:high",
-  "--no-session",
-  "-p", "@{prompt_file}"
-]
+command = ["python", "-m", "alluvium.builtin_agent", "--task-dir", "{task_dir}", "--worktree", "{worktree}", "--prompt-file", "{prompt_file}"]
 timeout_seconds = 3600
 ```
 
-Pi runs from the task worktree. The prompt file includes the absolute task folder path, so pi can write `.agent/` outputs and edit the durable repo.
+The built-in agent inventories inputs but does not reason or edit meaningfully. It is useful for tests and smoke checks.
+
+Pi runs from the task worktree by default. The prompt file includes the absolute task folder path, so pi can write `.agent/` outputs and edit the durable repo.
 
 ## Useful commands
 

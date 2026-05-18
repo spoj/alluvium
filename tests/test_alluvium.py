@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 from alluvium.config import default_config_text, load_config
@@ -18,6 +19,17 @@ def make_system(tmp_path: Path):
     text = text.replace("max_workers = 2", "max_workers = 4")
     config_path.write_text(text, encoding="utf-8")
     config = load_config(config_path)
+    config.agent.command = [
+        sys.executable,
+        "-m",
+        "alluvium.builtin_agent",
+        "--task-dir",
+        "{task_dir}",
+        "--worktree",
+        "{worktree}",
+        "--prompt-file",
+        "{prompt_file}",
+    ]
     ensure_task_dirs(config)
     init_repo_if_needed(config)
     return config
