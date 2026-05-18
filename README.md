@@ -146,11 +146,11 @@ and marks the task `needs_revision` in SQLite. The coordinator re-runs a worker 
 
 ## Configure the worker
 
-The default worker command uses `pi` with `gpt5/gpt-5.4:high`:
+The default worker command uses `pi` with `github-copilot/gpt-5.4:high`:
 
 ```toml
 [agent]
-command = ["pi", "--model", "gpt5/gpt-5.4:high", "--no-session", "-p", "@{prompt_file}"]
+command = ["pi", "--model", "github-copilot/gpt-5.4:high", "--no-session", "-p", "@{prompt_file}"]
 timeout_seconds = 3600
 ```
 

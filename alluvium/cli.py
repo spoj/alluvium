@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -235,6 +236,29 @@ def _find_task_row(config, task_ref: str) -> dict:
     return matches[0]
 
 
+def _archive_retry_runtime_files(config, task_dir: Path) -> None:
+    agent_dir = task_dir / config.reserved_dir
+    if not agent_dir.exists():
+        return
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    archive = agent_dir / "attempts" / stamp
+    moved = False
+    for rel in ["result.json", "result.md", "process.json", "command.json", "needs_human.md"]:
+        src = agent_dir / rel
+        if src.exists():
+            ensure_dir(archive)
+            shutil.move(str(src), str(archive / src.name))
+            moved = True
+    for rel in ["logs/stdout.log", "logs/stderr.log"]:
+        src = agent_dir / rel
+        if src.exists() and src.stat().st_size:
+            ensure_dir(archive / "logs")
+            shutil.move(str(src), str(archive / "logs" / src.name))
+            moved = True
+    if moved:
+        (archive / "retry.txt").write_text("Archived before retry.\n", encoding="utf-8")
+
+
 def cmd_retry(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config))
     init_store(config)
@@ -253,6 +277,7 @@ def cmd_retry(args: argparse.Namespace) -> int:
     if state not in retryable and not args.from_any_state:
         print(f"task {task_id} is in state {state!r}; use --from-any-state to force", file=sys.stderr)
         return 2
+    _archive_retry_runtime_files(config, task_dir)
     mark_task_state(config, task_id, "queued", task_dir=task_dir)
     print(json.dumps({"task_id": task_id, "previous_state": state, "state": "queued", "task_dir": str(task_dir)}, indent=2))
     return 0

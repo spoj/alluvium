@@ -14,7 +14,7 @@ class AgentConfig:
         default_factory=lambda: [
             "pi",
             "--model",
-            "gpt5/gpt-5.4:high",
+            "github-copilot/gpt-5.4:high",
             "--no-session",
             "-p",
             "@{prompt_file}",
@@ -184,7 +184,7 @@ reserved_dir = ".agent"
 # Default uses pi. Placeholders: {{task_id}}, {{task_dir}}, {{agent_dir}}, {{worktree}}, {{branch}}, {{prompt_file}}
 # For a deterministic smoke-test worker, use:
 # command = ["{sys.executable}", "-m", "alluvium.builtin_agent", "--task-dir", "{{task_dir}}", "--worktree", "{{worktree}}", "--prompt-file", "{{prompt_file}}"]
-command = ["pi", "--model", "gpt5/gpt-5.4:high", "--no-session", "-p", "@{{prompt_file}}"]
+command = ["pi", "--model", "github-copilot/gpt-5.4:high", "--no-session", "-p", "@{{prompt_file}}"]
 timeout_seconds = 3600
 
 [integration]
