@@ -35,8 +35,13 @@ async def launch_worker(config: Config, task_dir: Path, *, git_lock: asyncio.Loc
         "prompt_file": str(prompt_file),
     }
     command = render_command(config.agent.command, mapping)
-    if command and command[0] in {"python", "python3"} and shutil.which(command[0]) is None:
-        command[0] = sys.executable
+    if command:
+        if command[0] in {"python", "python3"} and shutil.which(command[0]) is None:
+            command[0] = sys.executable
+        else:
+            resolved = shutil.which(command[0])
+            if resolved:
+                command[0] = resolved
     atomic_write_json(agent_dir / "command.json", {"command": command, "started_at": iso_now()})
     append_event(task_dir, "worker_starting", command=command, branch=branch, worktree=str(worktree))
 

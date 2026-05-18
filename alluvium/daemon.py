@@ -71,6 +71,9 @@ def pid_is_running(pid: int) -> bool:
         return False
     except PermissionError:
         return True
+    except OSError:
+        # Windows can raise OSError/WinError 87 for stale or invalid pids.
+        return False
 
 
 def read_daemon_pid(config: Config) -> int | None:
