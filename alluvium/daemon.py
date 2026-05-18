@@ -322,9 +322,13 @@ class AlluviumDaemon:
             if self.worker_slots.locked():
                 return
             revision_items = self.iter_revision_tasks()
+            queued_items = self.iter_queued_tasks()
             inbox_items = iter_claimable_inbox(self.config)
             if revision_items:
                 item = revision_items[0]
+                claim = claim_revision_task
+            elif queued_items:
+                item = queued_items[0]
                 claim = claim_revision_task
             elif inbox_items:
                 item = inbox_items[0]
@@ -439,6 +443,9 @@ class AlluviumDaemon:
     def iter_revision_tasks(self) -> list[Path]:
         return [p for p in tasks_by_state(self.config, "needs_revision") if p.exists()]
 
+    def iter_queued_tasks(self) -> list[Path]:
+        return [p for p in tasks_by_state(self.config, "queued") if p.exists()]
+
     async def janitor_loop(self) -> None:
         while not self.stop_event.is_set():
             # Placeholder for future lease expiry, stale worktree pruning, metrics, etc.
@@ -474,7 +481,7 @@ class AlluviumDaemon:
                 await self.start_available_workers()
                 while self.running_tasks:
                     await asyncio.sleep(0.1)
-                if not self.iter_revision_tasks() and not iter_claimable_inbox(self.config):
+                if not self.iter_revision_tasks() and not self.iter_queued_tasks() and not iter_claimable_inbox(self.config):
                     break
             if self.config.integration.enabled:
                 await self.integrate_ready_done_tasks(limit=None)

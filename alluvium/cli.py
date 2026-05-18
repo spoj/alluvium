@@ -14,7 +14,7 @@ from .config import default_config_text, load_config
 from .daemon import AlluviumDaemon, pid_is_running, read_daemon_pid, status_summary
 from .fsqueue import ensure_task_dirs
 from .gitops import init_repo_if_needed
-from .store import init_store
+from .store import init_store, mark_task_state, task_rows
 from .util import ensure_dir
 
 
@@ -50,6 +50,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     status = sub.add_parser("status", help="Print JSON status summary.")
     status.add_argument("--config", default="config.toml")
+
+    retry = sub.add_parser("retry", help="Queue an existing claimed task to run again.")
+    retry.add_argument("task", help="Task id or unique id prefix.")
+    retry.add_argument("--config", default="config.toml")
+    retry.add_argument("--from-any-state", action="store_true", help="Allow retrying tasks that are not failed/needs_revision/needs_human/lost/done.")
 
     example = sub.add_parser("example-task", help="Drop an example task into inbox/.")
     example.add_argument("--config", default="config.toml")
@@ -216,6 +221,43 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _find_task_row(config, task_ref: str) -> dict:
+    rows = task_rows(config)
+    exact = [row for row in rows if row.get("id") == task_ref]
+    if exact:
+        return exact[0]
+    matches = [row for row in rows if str(row.get("id", "")).startswith(task_ref)]
+    if not matches:
+        raise ValueError(f"no task matches {task_ref!r}")
+    if len(matches) > 1:
+        ids = ", ".join(str(row.get("id")) for row in matches[:10])
+        raise ValueError(f"task prefix {task_ref!r} is ambiguous: {ids}")
+    return matches[0]
+
+
+def cmd_retry(args: argparse.Namespace) -> int:
+    config = load_config(Path(args.config))
+    init_store(config)
+    try:
+        row = _find_task_row(config, args.task)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    task_id = str(row["id"])
+    task_dir = Path(str(row["task_dir"]))
+    if not task_dir.exists():
+        print(f"task folder is missing; cannot retry: {task_dir}", file=sys.stderr)
+        return 1
+    state = str(row["state"])
+    retryable = {"failed", "needs_revision", "needs_human", "lost", "done", "worker_done"}
+    if state not in retryable and not args.from_any_state:
+        print(f"task {task_id} is in state {state!r}; use --from-any-state to force", file=sys.stderr)
+        return 2
+    mark_task_state(config, task_id, "queued", task_dir=task_dir)
+    print(json.dumps({"task_id": task_id, "previous_state": state, "state": "queued", "task_dir": str(task_dir)}, indent=2))
+    return 0
+
+
 def cmd_example_task(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config))
     ensure_task_dirs(config)
@@ -253,6 +295,8 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(cmd_integrate_once(args))
     if args.command == "status":
         return cmd_status(args)
+    if args.command == "retry":
+        return cmd_retry(args)
     if args.command == "example-task":
         return cmd_example_task(args)
     parser.error("unknown command")
