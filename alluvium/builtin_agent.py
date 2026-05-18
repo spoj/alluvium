@@ -6,11 +6,12 @@ import os
 from pathlib import Path
 
 
-def inventory(task_dir: Path, reserved: str = ".agent") -> list[dict[str, object]]:
+def inventory(task_dir: Path, reserved: str = ".agent", system: str = ".system") -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
+    skip_top = {reserved, system}
     for root, dirs, files in os.walk(task_dir):
         rel_root = Path(root).relative_to(task_dir)
-        if rel_root.parts and rel_root.parts[0] == reserved:
+        if rel_root.parts and rel_root.parts[0] in skip_top:
             dirs[:] = []
             continue
         for name in files:

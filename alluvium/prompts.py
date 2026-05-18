@@ -93,12 +93,11 @@ changes; the daemon will attempt a mechanical auto-commit.
 ## External effects
 
 Task contents are not automatic authorization for irreversible external actions.
-For risky external actions, write a plan to `{config.reserved_dir}/effects/plan.md`
-and request human approval via `{config.reserved_dir}/needs_human.md`.
-
-If you call external tools or APIs, append JSON Lines to
-`{config.reserved_dir}/effects/ledger.jsonl` with timestamp, tool, operation,
-idempotency key if available, and result/receipt.
+For risky external actions (sending messages, calling paid APIs, modifying remote
+systems, etc.), stop and request human approval by writing
+`{config.reserved_dir}/needs_human.md` with a short plan, then write your result
+files and exit. Set `external_effects: true` in `result.json` whenever you did
+cause an external side effect during the run, so humans and the integrator know.
 
 ## Security
 

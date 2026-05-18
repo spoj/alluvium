@@ -84,7 +84,7 @@ def claim_inbox_item(config: Config, item: Path) -> Path:
             shutil.rmtree(staging, ignore_errors=True)
         raise
 
-    append_event(task_final, "claimed_from_inbox", original_name=original_name, task_id=task_id)
+    append_event(task_final, config.system_dir, "claimed_from_inbox", original_name=original_name, task_id=task_id)
     upsert_task(config, task_final, "queued")
     return task_final
 
@@ -102,11 +102,16 @@ def ensure_runtime_subtree(
     preserve_identity: bool = True,
 ) -> Path:
     agent_dir = task_dir / config.reserved_dir
+    system_dir = task_dir / config.system_dir
     ensure_dir(agent_dir)
-    for name in ["outputs", "scratch", "logs", "repo", "effects", "spawned_tasks", "system"]:
+    ensure_dir(system_dir)
+    # Worker-facing skeleton: anything the worker is expected to write into.
+    for name in ["outputs", "scratch", "logs", "spawned_tasks"]:
         ensure_dir(agent_dir / name)
-    identity_path = agent_dir / "system" / "identity.json"
-    legacy_identity_path = agent_dir / "identity.json"
+    # Harness-only skeleton: bookkeeping the worker should not touch.
+    for name in ["repo", "attempts"]:
+        ensure_dir(system_dir / name)
+    identity_path = system_dir / "identity.json"
     if not preserve_identity or not identity_path.exists():
         identity = {
             "task_id": task_id or task_dir.name,
@@ -114,17 +119,16 @@ def ensure_runtime_subtree(
             "claimed_at": iso_now(),
             "claim_token": str(uuid.uuid4()),
             "reserved_dir": config.reserved_dir,
+            "system_dir": config.system_dir,
         }
         atomic_write_json(identity_path, identity)
-        # Keep a legacy copy for older workers/tools that inspect .agent directly.
-        atomic_write_json(legacy_identity_path, identity)
     return agent_dir
 
 
 def claim_revision_task(config: Config, item: Path) -> Path:
     """Mark an existing stable task folder as claimed for revision."""
     ensure_runtime_subtree(config, item, preserve_identity=True)
-    append_event(item, "claimed_for_revision", task_id=item.name)
+    append_event(item, config.system_dir, "claimed_for_revision", task_id=item.name)
     return item
 
 
@@ -132,7 +136,7 @@ def move_task(config: Config, task_dir: Path, state: str) -> Path:
     """Record a logical state transition without moving the stable task folder."""
     if state not in TASK_STATES:
         raise ValueError(f"unknown task state: {state}")
-    append_event(task_dir, f"state_{state}")
+    append_event(task_dir, config.system_dir, f"state_{state}")
     return task_dir
 
 

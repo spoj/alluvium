@@ -58,7 +58,7 @@ def create_worktree(config: Config, *, task_id: str, task_dir: Path | None = Non
     base_commit = current_commit(config, base)
 
     if task_dir is not None:
-        prior_base = task_dir / config.reserved_dir / "repo" / "base_commit.txt"
+        prior_base = task_dir / config.system_dir / "repo" / "base_commit.txt"
         if prior_base.exists():
             base_commit = prior_base.read_text(encoding="utf-8").strip() or base_commit
 
@@ -75,7 +75,7 @@ def create_worktree(config: Config, *, task_id: str, task_dir: Path | None = Non
 
 
 def write_repo_metadata(config: Config, task_dir: Path, *, branch: str, worktree: Path, base_commit: str) -> None:
-    repo_dir = task_dir / config.reserved_dir / "repo"
+    repo_dir = task_dir / config.system_dir / "repo"
     ensure_dir(repo_dir)
     atomic_write_text(repo_dir / "branch.txt", branch + "\n")
     atomic_write_text(repo_dir / "worktree.txt", str(worktree) + "\n")
@@ -138,7 +138,7 @@ def finalize_worker_branch(config: Config, task_dir: Path, *, branch: str, workt
     has_changes = branch_has_diff(config, base_commit=base_commit, branch=branch)
     count = branch_commit_count(config, base_commit=base_commit, branch=branch)
 
-    repo_dir = task_dir / config.reserved_dir / "repo"
+    repo_dir = task_dir / config.system_dir / "repo"
     ensure_dir(repo_dir)
     atomic_write_text(repo_dir / "head_commit.txt", head + "\n")
     atomic_write_text(repo_dir / "diffstat.txt", diffstat(config, base_commit=base_commit, branch=branch))
@@ -146,7 +146,7 @@ def finalize_worker_branch(config: Config, task_dir: Path, *, branch: str, workt
         atomic_write_text(repo_dir / "patch.diff", patch(config, base_commit=base_commit, branch=branch))
 
     prior = {}
-    prior_path = task_dir / config.reserved_dir / "integration.json"
+    prior_path = task_dir / config.system_dir / "integration.json"
     if prior_path.exists():
         try:
             import json
@@ -164,7 +164,7 @@ def finalize_worker_branch(config: Config, task_dir: Path, *, branch: str, workt
         "revision_round": int(prior.get("revision_round", 0)),
         "updated_at": iso_now(),
     }
-    atomic_write_json(task_dir / config.reserved_dir / "integration.json", integration)
+    atomic_write_json(task_dir / config.system_dir / "integration.json", integration)
     return integration
 
 
@@ -191,7 +191,7 @@ def run_integration_tests(config: Config, *, cwd: Path | None = None) -> tuple[b
 
 
 def integration_json_path(config: Config, task_dir: Path) -> Path:
-    return task_dir / config.reserved_dir / "integration.json"
+    return task_dir / config.system_dir / "integration.json"
 
 
 def _return_for_revision_or_block(
@@ -293,7 +293,7 @@ def integrate_task(config: Config, task_dir: Path) -> dict[str, Any]:
         merge = run_cmd(["git", "merge", "--squash", branch], cwd=integration_worktree, env=git_env(config), check=False)
         if merge.returncode != 0:
             conflict_text = f"STDOUT:\n{merge.stdout}\n\nSTDERR:\n{merge.stderr}\n"
-            atomic_write_text(task_dir / config.reserved_dir / "repo" / "integration_conflict.txt", conflict_text)
+            atomic_write_text(task_dir / config.system_dir / "repo" / "integration_conflict.txt", conflict_text)
             return _return_for_revision_or_block(
                 config,
                 task_dir,
@@ -305,7 +305,7 @@ def integrate_task(config: Config, task_dir: Path) -> dict[str, Any]:
             )
 
         tests_ok, test_results = run_integration_tests(config, cwd=integration_worktree)
-        atomic_write_json(task_dir / config.reserved_dir / "repo" / "integration_tests.json", test_results)
+        atomic_write_json(task_dir / config.system_dir / "repo" / "integration_tests.json", test_results)
         if not tests_ok:
             return _return_for_revision_or_block(
                 config,

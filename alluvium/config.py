@@ -63,6 +63,7 @@ class Config:
     worktrees_path: Path
     logs_path: Path
     reserved_dir: str = ".agent"
+    system_dir: str = ".system"
     agent: AgentConfig = field(default_factory=AgentConfig)
     integration: IntegrationConfig = field(default_factory=IntegrationConfig)
     git: GitConfig = field(default_factory=GitConfig)
@@ -159,6 +160,7 @@ def load_config(path: Path) -> Config:
         worktrees_path=worktrees_path,
         logs_path=logs_path,
         reserved_dir=str(raw.get("reserved_dir", ".agent")),
+        system_dir=str(raw.get("system_dir", ".system")),
         agent=agent,
         integration=integration,
         git=git,
@@ -178,7 +180,8 @@ inbox_path = "inbox"
 tasks_path = "tasks"
 worktrees_path = "worktrees"
 logs_path = "logs"
-reserved_dir = ".agent"
+reserved_dir = ".agent"   # worker-facing scratch / outputs / results
+system_dir = ".system"    # harness-only bookkeeping; workers should not touch
 
 [agent]
 # Default uses pi. Placeholders: {{task_id}}, {{task_dir}}, {{agent_dir}}, {{worktree}}, {{branch}}, {{prompt_file}}

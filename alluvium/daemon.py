@@ -167,11 +167,11 @@ class AlluviumDaemon:
             # Keep daemon identity/path stable while still reloading operational settings.
             immutable_changed = any(
                 getattr(new_config, name) != getattr(self.config, name)
-                for name in ["root", "repo_path", "inbox_path", "tasks_path", "worktrees_path", "logs_path", "reserved_dir"]
+                for name in ["root", "repo_path", "inbox_path", "tasks_path", "worktrees_path", "logs_path", "reserved_dir", "system_dir"]
             )
             if immutable_changed:
                 print(
-                    "[daemon] config reloaded; root/repo/inbox/tasks/worktrees/logs/reserved_dir changes require restart and were ignored",
+                    "[daemon] config reloaded; root/repo/inbox/tasks/worktrees/logs/reserved_dir/system_dir changes require restart and were ignored",
                     flush=True,
                 )
                 new_config.root = self.config.root
@@ -181,6 +181,7 @@ class AlluviumDaemon:
                 new_config.worktrees_path = self.config.worktrees_path
                 new_config.logs_path = self.config.logs_path
                 new_config.reserved_dir = self.config.reserved_dir
+                new_config.system_dir = self.config.system_dir
             old_max = self.config.safety.max_workers
             self.config = new_config
             if self.config.safety.max_workers != old_max:
@@ -255,7 +256,7 @@ class AlluviumDaemon:
                 continue
             state = self.infer_orphan_state(task)
             try:
-                append_event(task, "reconstructed_missing_db_row", inferred_state=state)
+                append_event(task, self.config.system_dir, "reconstructed_missing_db_row", inferred_state=state)
                 upsert_task(self.config, task, state)
             except Exception:
                 quarantine = self.config.tasks_path / ".quarantine"
@@ -296,7 +297,7 @@ class AlluviumDaemon:
                 if not task.exists():
                     continue
                 try:
-                    append_event(task, "startup_recovery_interrupted", previous_state=state)
+                    append_event(task, self.config.system_dir, "startup_recovery_interrupted", previous_state=state)
                     ensure_result_files(
                         self.config,
                         task,
@@ -388,11 +389,11 @@ class AlluviumDaemon:
                     worker_done = move_task(self.config, task_dir, "worker_done")
                     upsert_task(self.config, worker_done, "worker_done")
         except asyncio.CancelledError:
-            append_event(task_dir, "worker_cancelled_by_daemon_shutdown")
+            append_event(task_dir, self.config.system_dir, "worker_cancelled_by_daemon_shutdown")
             raise
         except Exception as exc:
             try:
-                append_event(task_dir, "worker_supervisor_error", error=str(exc))
+                append_event(task_dir, self.config.system_dir, "worker_supervisor_error", error=str(exc))
                 ensure_result_files(self.config, task_dir, status="failed", summary=f"Supervisor error: {exc}")
                 failed = move_task(self.config, task_dir, "failed")
                 upsert_task(self.config, failed, "failed")
@@ -418,9 +419,9 @@ class AlluviumDaemon:
                 break
             async with self.main_repo_lock:
                 upsert_task(self.config, task, "integrating")
-                append_event(task, "integration_started")
+                append_event(task, self.config.system_dir, "integration_started")
                 status = await asyncio.to_thread(integrate_task, self.config, task)
-                append_event(task, "integration_finished", status=status.get("status"), reason=status.get("reason"))
+                append_event(task, self.config.system_dir, "integration_finished", status=status.get("status"), reason=status.get("reason"))
                 if status.get("status") == "needs_revision":
                     needs_revision = move_task(self.config, task, "needs_revision")
                     upsert_task(self.config, needs_revision, "needs_revision")
@@ -432,7 +433,7 @@ class AlluviumDaemon:
                     needs.write_text(
                         "# Integration blocked\n\n"
                         f"Reason: {status.get('reason', 'unknown')}\n\n"
-                        "Inspect `.agent/repo/` and `.agent/integration.json`. Resolve manually or move this task to `needs_revision/` to ask a worker to amend it.\n",
+                        "Inspect `.system/repo/` and `.system/integration.json`. Resolve manually or move this task to `needs_revision/` to ask a worker to amend it.\n",
                         encoding="utf-8",
                     )
                     needs_human = move_task(self.config, task, "needs_human")

@@ -52,14 +52,12 @@ def init_store(config: Config) -> None:
 
 
 def _task_identity(config: Config, task_dir: Path) -> dict[str, Any]:
-    data = read_json(task_dir / config.reserved_dir / "system" / "identity.json", None)
-    if data is None:
-        data = read_json(task_dir / config.reserved_dir / "identity.json", {})
+    data = read_json(task_dir / config.system_dir / "identity.json", {})
     return data if isinstance(data, dict) else {}
 
 
 def _repo_metadata(config: Config, task_dir: Path) -> dict[str, str | None]:
-    repo_dir = task_dir / config.reserved_dir / "repo"
+    repo_dir = task_dir / config.system_dir / "repo"
 
     def read(name: str) -> str | None:
         p = repo_dir / name

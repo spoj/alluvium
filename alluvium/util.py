@@ -68,10 +68,10 @@ def append_jsonl(path: Path, data: Mapping[str, Any]) -> None:
         fh.write(json.dumps(dict(data), sort_keys=True) + "\n")
 
 
-def append_event(task_dir: Path, event: str, **fields: Any) -> None:
+def append_event(task_dir: Path, system_dir: str, event: str, **fields: Any) -> None:
     payload: dict[str, Any] = {"ts": iso_now(), "event": event}
     payload.update(fields)
-    append_jsonl(task_dir / ".agent" / "events.jsonl", payload)
+    append_jsonl(task_dir / system_dir / "events.jsonl", payload)
 
 
 def tree_latest_mtime(path: Path) -> float:

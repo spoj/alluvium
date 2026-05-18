@@ -17,6 +17,7 @@ from .util import atomic_write_json, atomic_write_text, append_event, iso_now, r
 async def launch_worker(config: Config, task_dir: Path, *, git_lock: asyncio.Lock) -> dict[str, Any]:
     task_id = task_dir.name
     agent_dir = task_dir / config.reserved_dir
+    system_dir = task_dir / config.system_dir
 
     async with git_lock:
         branch, worktree, base_commit = create_worktree(config, task_id=task_id, task_dir=task_dir)
@@ -42,8 +43,8 @@ async def launch_worker(config: Config, task_dir: Path, *, git_lock: asyncio.Loc
             resolved = shutil.which(command[0])
             if resolved:
                 command[0] = resolved
-    atomic_write_json(agent_dir / "command.json", {"command": command, "started_at": iso_now()})
-    append_event(task_dir, "worker_starting", command=command, branch=branch, worktree=str(worktree))
+    atomic_write_json(system_dir / "command.json", {"command": command, "started_at": iso_now()})
+    append_event(task_dir, config.system_dir, "worker_starting", command=command, branch=branch, worktree=str(worktree))
 
     stdout_path = agent_dir / "logs" / "stdout.log"
     stderr_path = agent_dir / "logs" / "stderr.log"
@@ -68,7 +69,7 @@ async def launch_worker(config: Config, task_dir: Path, *, git_lock: asyncio.Loc
                 start_new_session=True,
             )
         except FileNotFoundError as exc:
-            append_event(task_dir, "worker_launch_failed", error=str(exc))
+            append_event(task_dir, config.system_dir, "worker_launch_failed", error=str(exc))
             atomic_write_json(
                 agent_dir / "result.json",
                 {
@@ -81,11 +82,11 @@ async def launch_worker(config: Config, task_dir: Path, *, git_lock: asyncio.Loc
             )
             return {"exit_code": 127, "branch": branch, "worktree": str(worktree), "base_commit": base_commit}
 
-        atomic_write_json(agent_dir / "process.json", {"pid": proc.pid, "started_at": iso_now()})
+        atomic_write_json(system_dir / "process.json", {"pid": proc.pid, "started_at": iso_now()})
         try:
             exit_code = await asyncio.wait_for(proc.wait(), timeout=config.agent.timeout_seconds)
         except TimeoutError:
-            append_event(task_dir, "worker_timeout", timeout_seconds=config.agent.timeout_seconds)
+            append_event(task_dir, config.system_dir, "worker_timeout", timeout_seconds=config.agent.timeout_seconds)
             try:
                 os.killpg(proc.pid, signal.SIGTERM)
             except Exception:
@@ -100,7 +101,7 @@ async def launch_worker(config: Config, task_dir: Path, *, git_lock: asyncio.Loc
                 await proc.wait()
             exit_code = -9
         except asyncio.CancelledError:
-            append_event(task_dir, "worker_process_cancelled", pid=proc.pid)
+            append_event(task_dir, config.system_dir, "worker_process_cancelled", pid=proc.pid)
             try:
                 os.killpg(proc.pid, signal.SIGTERM)
             except Exception:
@@ -115,15 +116,15 @@ async def launch_worker(config: Config, task_dir: Path, *, git_lock: asyncio.Loc
                 await proc.wait()
             raise
 
-    append_event(task_dir, "worker_exited", exit_code=exit_code)
-    atomic_write_json(agent_dir / "process.json", {"exit_code": exit_code, "finished_at": iso_now()})
+    append_event(task_dir, config.system_dir, "worker_exited", exit_code=exit_code)
+    atomic_write_json(system_dir / "process.json", {"exit_code": exit_code, "finished_at": iso_now()})
 
     # Capture/commit repository state even if the worker failed, so diagnostics are preserved.
     try:
         async with git_lock:
             integration = finalize_worker_branch(config, task_dir, branch=branch, worktree=worktree, base_commit=base_commit)
     except Exception as exc:
-        append_event(task_dir, "finalize_branch_failed", error=str(exc))
+        append_event(task_dir, config.system_dir, "finalize_branch_failed", error=str(exc))
         integration = {
             "status": "blocked",
             "has_repo_changes": True,
@@ -132,7 +133,7 @@ async def launch_worker(config: Config, task_dir: Path, *, git_lock: asyncio.Loc
             "error": str(exc),
             "updated_at": iso_now(),
         }
-        atomic_write_json(agent_dir / "integration.json", integration)
+        atomic_write_json(system_dir / "integration.json", integration)
 
     return {
         "exit_code": exit_code,

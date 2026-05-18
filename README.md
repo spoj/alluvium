@@ -67,7 +67,8 @@ my-alluvium/
   tasks/            # stable system-owned task folders; state lives in SQLite
     <task-id>/
       input/        # original producer files
-      .agent/       # prompts, logs, outputs, repo metadata, results
+      .agent/       # worker-facing: prompt, plan, outputs, logs, result
+      .system/      # harness-only: identity, events, integration, repo metadata
   repo/             # durable Git repo: code, docs, knowledge, skills, tests, etc.
   worktrees/        # one Git worktree per active task
   logs/
@@ -99,7 +100,7 @@ tasks/20260516T101530Z-acme-contract-a8f2c1/
   .agent/
 ```
 
-`.agent/` is reserved runtime state at the task root. Producer files are always moved under `input/`, so a producer-supplied `.agent/` is treated as ordinary untrusted input at `input/.agent/` rather than trusted runtime state.
+`.agent/` is the worker-facing reserved subtree (the agent reads and writes here). `.system/` is the harness-only subtree (identity, event log, integration result, repo metadata, retry archives) — workers should not touch it. Producer files are always moved under `input/`, so a producer-supplied `.agent/` or `.system/` is treated as ordinary untrusted input at `input/...` rather than trusted runtime state.
 
 ## Lifecycle
 
@@ -119,7 +120,7 @@ Workers may run concurrently, but the default is intentionally low. Integration 
 The task folder does not move when state changes. SQLite is authoritative for state; integration details are also stored in:
 
 ```text
-.agent/integration.json
+.system/integration.json
 ```
 
 Examples:
@@ -182,7 +183,7 @@ The generated prompt asks the worker to:
 - commit useful durable repo changes on the task branch,
 - request human help by writing `.agent/needs_human.md`,
 - address `.agent/revision_request.md` when returned by the integrator,
-- log external effects under `.agent/effects/ledger.jsonl`.
+- set `external_effects: true` in `result.json` when the run caused side effects outside the repo.
 
 ### Deterministic smoke-test worker
 

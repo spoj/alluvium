@@ -238,22 +238,31 @@ def _find_task_row(config, task_ref: str) -> dict:
 
 def _archive_retry_runtime_files(config, task_dir: Path) -> None:
     agent_dir = task_dir / config.reserved_dir
-    if not agent_dir.exists():
+    system_dir = task_dir / config.system_dir
+    if not agent_dir.exists() and not system_dir.exists():
         return
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    archive = agent_dir / "attempts" / stamp
+    archive = system_dir / "attempts" / stamp
     moved = False
-    for rel in ["result.json", "result.md", "process.json", "command.json", "needs_human.md"]:
+    # Worker-facing artifacts that should not leak across retries.
+    for rel in ["result.json", "result.md", "needs_human.md"]:
         src = agent_dir / rel
         if src.exists():
-            ensure_dir(archive)
-            shutil.move(str(src), str(archive / src.name))
+            ensure_dir(archive / "agent")
+            shutil.move(str(src), str(archive / "agent" / src.name))
             moved = True
     for rel in ["logs/stdout.log", "logs/stderr.log"]:
         src = agent_dir / rel
         if src.exists() and src.stat().st_size:
-            ensure_dir(archive / "logs")
-            shutil.move(str(src), str(archive / "logs" / src.name))
+            ensure_dir(archive / "agent" / "logs")
+            shutil.move(str(src), str(archive / "agent" / "logs" / src.name))
+            moved = True
+    # Harness bookkeeping from the previous attempt.
+    for rel in ["process.json", "command.json"]:
+        src = system_dir / rel
+        if src.exists():
+            ensure_dir(archive / "system")
+            shutil.move(str(src), str(archive / "system" / src.name))
             moved = True
     if moved:
         (archive / "retry.txt").write_text("Archived before retry.\n", encoding="utf-8")

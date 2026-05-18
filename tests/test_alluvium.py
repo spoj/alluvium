@@ -9,6 +9,7 @@ from alluvium.config import default_config_text, load_config
 from alluvium.daemon import AlluviumDaemon
 from alluvium.fsqueue import ensure_task_dirs
 from alluvium.gitops import init_repo_if_needed
+from alluvium.prompts import worker_prompt
 from alluvium.store import task_row, tasks_by_state, upsert_task
 
 
@@ -48,7 +49,7 @@ def test_bare_file_inbox_item_is_wrapped_and_completed(tmp_path: Path):
     assert (task / "input" / "note.txt").read_text(encoding="utf-8") == "hello"
     inventory = json.loads((task / ".agent" / "outputs" / "inventory.json").read_text(encoding="utf-8"))
     assert inventory == [{"path": "input/note.txt", "size": 5}]
-    integration = json.loads((task / ".agent" / "integration.json").read_text(encoding="utf-8"))
+    integration = json.loads((task / ".system" / "integration.json").read_text(encoding="utf-8"))
     assert integration["status"] == "noop"
     assert integration["has_repo_changes"] is False
 
@@ -102,7 +103,7 @@ agent = task_dir / '.agent'
     assert (config.repo_path / "note.md").read_text(encoding="utf-8") == "# Note\n"
     done = tasks_by_state(config, "done")
     assert len(done) == 1
-    integration = json.loads((done[0] / ".agent" / "integration.json").read_text(encoding="utf-8"))
+    integration = json.loads((done[0] / ".system" / "integration.json").read_text(encoding="utf-8"))
     assert integration["status"] == "merged"
     assert integration["has_repo_changes"] is True
     assert "merge_commit" in integration
@@ -174,7 +175,7 @@ agent = task_dir / '.agent'
     assert len(revisions) == 1
     revision_task = revisions[0]
     assert (revision_task / ".agent" / "revision_request.md").exists()
-    integration = json.loads((revision_task / ".agent" / "integration.json").read_text(encoding="utf-8"))
+    integration = json.loads((revision_task / ".system" / "integration.json").read_text(encoding="utf-8"))
     assert integration["status"] == "needs_revision"
     assert integration["revision_round"] == 1
 
@@ -204,6 +205,19 @@ assert (agent / 'revision_request.md').exists()
     assert (config.repo_path / "required.txt").read_text(encoding="utf-8") == "ok\n"
     done = tasks_by_state(config, "done")
     assert len(done) == 1
-    integration = json.loads((done[0] / ".agent" / "integration.json").read_text(encoding="utf-8"))
+    integration = json.loads((done[0] / ".system" / "integration.json").read_text(encoding="utf-8"))
     assert integration["status"] == "merged"
     assert integration["revision_round"] == 1
+
+
+def test_worker_prompt_does_not_mention_system_dir(tmp_path: Path):
+    config = make_system(tmp_path)
+    prompt = worker_prompt(
+        config,
+        task_id="t",
+        task_dir=tmp_path / "tasks" / "t",
+        worktree=tmp_path / "worktrees" / "t",
+        branch="task/t",
+    )
+    assert config.system_dir not in prompt
+    assert "effects/ledger" not in prompt
