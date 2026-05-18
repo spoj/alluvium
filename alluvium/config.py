@@ -16,6 +16,8 @@ class AgentConfig:
             "--model",
             "github-copilot/gpt-5.4:high",
             "--no-session",
+            "--mode",
+            "json",
             "-p",
             "@{prompt_file}",
         ]
@@ -184,10 +186,10 @@ reserved_dir = ".agent"   # worker-facing scratch / outputs / results
 system_dir = ".system"    # harness-only bookkeeping; workers should not touch
 
 [agent]
-# Default uses pi. Placeholders: {{task_id}}, {{task_dir}}, {{agent_dir}}, {{worktree}}, {{branch}}, {{prompt_file}}
+# Default uses pi JSON mode so stdout is an event transcript. Placeholders: {{task_id}}, {{task_dir}}, {{agent_dir}}, {{system_dir}}, {{worktree}}, {{branch}}, {{prompt_file}}, {{transcript_file}}
 # For a deterministic smoke-test worker, use:
 # command = ["{sys.executable}", "-m", "alluvium.builtin_agent", "--task-dir", "{{task_dir}}", "--worktree", "{{worktree}}", "--prompt-file", "{{prompt_file}}"]
-command = ["pi", "--model", "github-copilot/gpt-5.4:high", "--no-session", "-p", "@{{prompt_file}}"]
+command = ["pi", "--model", "github-copilot/gpt-5.4:high", "--no-session", "--mode", "json", "-p", "@{{prompt_file}}"]
 timeout_seconds = 3600
 
 [integration]

@@ -31,6 +31,7 @@ async def launch_worker(config: Config, task_dir: Path, *, git_lock: asyncio.Loc
         "task_id": task_id,
         "task_dir": str(task_dir),
         "agent_dir": str(agent_dir),
+        "system_dir": str(system_dir),
         "worktree": str(worktree),
         "branch": branch,
         "prompt_file": str(prompt_file),
@@ -53,6 +54,7 @@ async def launch_worker(config: Config, task_dir: Path, *, git_lock: asyncio.Loc
         "ALLUVIUM_TASK_ID": task_id,
         "ALLUVIUM_TASK_DIR": str(task_dir),
         "ALLUVIUM_AGENT_DIR": str(agent_dir),
+        "ALLUVIUM_TRANSCRIPT_FILE": str(system_dir / "transcript.jsonl"),
         "ALLUVIUM_WORKTREE": str(worktree),
         "ALLUVIUM_BRANCH": branch,
         "ALLUVIUM_PROMPT_FILE": str(prompt_file),
@@ -116,6 +118,10 @@ async def launch_worker(config: Config, task_dir: Path, *, git_lock: asyncio.Loc
                 await proc.wait()
             raise
 
+    transcript_path = system_dir / "transcript.jsonl"
+    if _command_uses_json_mode(command) and not transcript_path.exists() and stdout_path.exists() and stdout_path.stat().st_size:
+        shutil.copy2(stdout_path, transcript_path)
+
     append_event(task_dir, config.system_dir, "worker_exited", exit_code=exit_code)
     atomic_write_json(system_dir / "process.json", {"exit_code": exit_code, "finished_at": iso_now()})
 
@@ -142,6 +148,15 @@ async def launch_worker(config: Config, task_dir: Path, *, git_lock: asyncio.Loc
         "base_commit": base_commit,
         "integration": integration,
     }
+
+
+def _command_uses_json_mode(command: list[str]) -> bool:
+    for i, part in enumerate(command):
+        if part == "--mode" and i + 1 < len(command) and command[i + 1] == "json":
+            return True
+        if part == "--mode=json":
+            return True
+    return False
 
 
 def task_needs_human(config: Config, task_dir: Path) -> bool:

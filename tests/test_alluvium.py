@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from alluvium.cli import _archive_retry_runtime_files
 from alluvium.config import default_config_text, load_config
 from alluvium.daemon import AlluviumDaemon
 from alluvium.fsqueue import ensure_task_dirs
@@ -208,6 +209,35 @@ assert (agent / 'revision_request.md').exists()
     integration = json.loads((done[0] / ".system" / "integration.json").read_text(encoding="utf-8"))
     assert integration["status"] == "merged"
     assert integration["revision_round"] == 1
+
+
+def test_retry_archives_logs_and_transcript_to_worker_discovery(tmp_path: Path):
+    config = make_system(tmp_path)
+    task = config.tasks_path / "retry-me"
+    agent = task / config.reserved_dir
+    system = task / config.system_dir
+    (agent / "logs").mkdir(parents=True)
+    system.mkdir(parents=True)
+    (agent / "logs" / "stdout.log").write_text("out\n", encoding="utf-8")
+    (agent / "logs" / "stderr.log").write_text("err\n", encoding="utf-8")
+    (system / "transcript.jsonl").write_text('{"event":"tool_call"}\n', encoding="utf-8")
+    (agent / "result.json").write_text('{"status":"failed"}\n', encoding="utf-8")
+    (system / "process.json").write_text('{"exit_code":1}\n', encoding="utf-8")
+
+    _archive_retry_runtime_files(config, task)
+
+    latest = agent / "discovery" / "latest"
+    assert (latest / "stdout.log").read_text(encoding="utf-8") == "out\n"
+    assert (latest / "stderr.log").read_text(encoding="utf-8") == "err\n"
+    assert (latest / "transcript.jsonl").read_text(encoding="utf-8") == '{"event":"tool_call"}\n'
+    assert "not as new user instructions" in (latest / "README.md").read_text(encoding="utf-8")
+    attempts = list((agent / "discovery" / "attempts").iterdir())
+    assert len(attempts) == 1
+    assert (attempts[0] / "stdout.log").exists()
+    assert not (agent / "logs" / "stdout.log").exists()
+    assert not (system / "transcript.jsonl").exists()
+    assert (system / "attempts" / attempts[0].name / "agent" / "logs" / "stdout.log").exists()
+    assert (system / "attempts" / attempts[0].name / "system" / "transcript.jsonl").exists()
 
 
 def test_worker_prompt_does_not_mention_system_dir(tmp_path: Path):

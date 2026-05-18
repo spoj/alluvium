@@ -100,7 +100,7 @@ tasks/20260516T101530Z-acme-contract-a8f2c1/
   .agent/
 ```
 
-`.agent/` is the worker-facing reserved subtree (the agent reads and writes here). `.system/` is the harness-only subtree (identity, event log, integration result, repo metadata, retry archives) — workers should not touch it. Producer files are always moved under `input/`, so a producer-supplied `.agent/` or `.system/` is treated as ordinary untrusted input at `input/...` rather than trusted runtime state.
+`.agent/` is the worker-facing reserved subtree (the agent reads and writes here). `.system/` is the harness-only subtree (identity, event log, integration result, repo metadata, retry archives) — workers should not touch it. On retry, Alluvium moves the prior attempt's raw diagnostics into `.system/attempts/<stamp>/` and copies stdout, stderr, and any `.system/transcript.jsonl` into `.agent/discovery/` so the next worker can inspect them. Producer files are always moved under `input/`, so a producer-supplied `.agent/` or `.system/` is treated as ordinary untrusted input at `input/...` rather than trusted runtime state.
 
 ## Lifecycle
 
@@ -151,7 +151,7 @@ The default worker command uses `pi` with `github-copilot/gpt-5.4:high`:
 
 ```toml
 [agent]
-command = ["pi", "--model", "github-copilot/gpt-5.4:high", "--no-session", "-p", "@{prompt_file}"]
+command = ["pi", "--model", "github-copilot/gpt-5.4:high", "--no-session", "--mode", "json", "-p", "@{prompt_file}"]
 timeout_seconds = 3600
 ```
 
@@ -170,6 +170,7 @@ Alluvium also passes environment variables to the worker:
 ALLUVIUM_TASK_ID
 ALLUVIUM_TASK_DIR
 ALLUVIUM_AGENT_DIR
+ALLUVIUM_TRANSCRIPT_FILE
 ALLUVIUM_WORKTREE
 ALLUVIUM_BRANCH
 ALLUVIUM_PROMPT_FILE
@@ -178,6 +179,7 @@ ALLUVIUM_PROMPT_FILE
 The generated prompt asks the worker to:
 
 - infer the task from the free-form folder,
+- inspect `.agent/discovery/` first when it exists; it contains stdout, stderr, and transcript diagnostics copied from prior attempts,
 - write `.agent/understanding.md`, `.agent/plan.md`, `.agent/result.md`, and `.agent/result.json`,
 - put task artifacts under `.agent/outputs/`,
 - commit useful durable repo changes on the task branch,

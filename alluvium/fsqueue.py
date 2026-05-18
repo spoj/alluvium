@@ -106,7 +106,7 @@ def ensure_runtime_subtree(
     ensure_dir(agent_dir)
     ensure_dir(system_dir)
     # Worker-facing skeleton: anything the worker is expected to write into.
-    for name in ["outputs", "scratch", "logs", "spawned_tasks"]:
+    for name in ["outputs", "scratch", "logs", "spawned_tasks", "discovery"]:
         ensure_dir(agent_dir / name)
     # Harness-only skeleton: bookkeeping the worker should not touch.
     for name in ["repo", "attempts"]:
